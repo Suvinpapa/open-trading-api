@@ -1,4 +1,7 @@
-# KIS 오픈 API 백테스팅 시스템 통합 실행 스크립트 (Windows PowerShell)
+﻿# KIS 오픈 API 백테스팅 시스템 통합 실행 스크립트 (Windows PowerShell)
+
+# 한글 깨짐 방지: 콘솔 출력을 UTF-8로 설정
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # ---------------------------------------------------------
 # 설정 (안정화된 포트 및 환경)
@@ -43,4 +46,5 @@ Write-Host ">>> [프론트엔드]: http://localhost:$PORT_FRONTEND" -ForegroundC
 Write-Host ">>> [백엔드]:     http://localhost:$PORT_BACKEND" -ForegroundColor White
 Write-Host ">>> [API 문서]:  http://localhost:$PORT_BACKEND/api/docs" -ForegroundColor Gray
 
-Write-Host "`n팁: 별도의 창이 뜨지 않으며 현재 터미널을 공유하거나 백그라운드에서 동작합니다.`n" -ForegroundColor DarkGray
+Write-Host "`n팁: '.\stop_backtest.ps1' 명령으로 모든 서비스를 종료할 수 있습니다." -ForegroundColor DarkGray
+Write-Host "팁: 로그가 보이지 않아도 백그라운드에서 정상 작동 중입니다.`n" -ForegroundColor DarkGray
