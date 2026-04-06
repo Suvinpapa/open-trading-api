@@ -356,7 +356,7 @@ class LeanClient:
         def check_cache_coverage(csv_path: Path) -> bool:
             """캐시 파일이 요청 날짜 범위를 커버하는지 확인"""
             try:
-                with open(csv_path, 'r') as f:
+                with open(csv_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                 if len(lines) < 2:
                     return False
@@ -376,7 +376,7 @@ class LeanClient:
         def load_from_cache(csv_path: Path) -> pd.DataFrame:
             """캐시 파일에서 DataFrame 로드"""
             rows = []
-            with open(csv_path, 'r') as f:
+            with open(csv_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     parts = line.strip().split(",")
                     if len(parts) >= 6:

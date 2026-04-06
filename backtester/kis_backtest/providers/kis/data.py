@@ -89,21 +89,35 @@ class KISDataProvider:
                 "FID_ORG_ADJ_PRC": "0",  # 수정주가
             }
 
-            # EGW00201 rate limit 자동 재시도
+            # EGW00201 rate limit 또는 500 에러 자동 재시도
             resp = None
             for attempt in range(_RATE_LIMIT_MAX_RETRIES):
                 resp = self._auth.get(ApiPath.DOMESTIC_DAILY, params, TrId.DAILY_PRICE)
                 if resp.is_ok():
                     break
+                
+                # 1. 초당 호출 제한 (EGW00201)
                 if resp.error_code == _RATE_LIMIT_CODE:
                     if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
                         logger.warning(
-                            f"[RateLimit] {symbol} EGW00201 — {_RATE_LIMIT_WAIT}초 대기 후 재시도 "
+                            f"[RateLimit] {symbol} {resp.error_code} — {_RATE_LIMIT_WAIT}초 대기 후 재시도 "
                             f"({attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
                         )
                         time.sleep(_RATE_LIMIT_WAIT)
                     continue
-                break  # 다른 에러
+                
+                # 2. 모의투자 서버 일시적 오류 (500)
+                if resp.status_code == 500:
+                    if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
+                        wait = 5 * (attempt + 1)
+                        logger.warning(
+                            f"[MockError] {symbol} 500 Internal Error — {wait}초 대기 후 재시도 "
+                            f"({attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
+                        )
+                        time.sleep(wait)
+                    continue
+                    
+                break  # 다른 치명적 에러
 
             if not resp.is_ok():
                 logger.error(f"일봉 조회 실패: {symbol} - {resp.error_message}")
@@ -489,19 +503,32 @@ class KISDataProvider:
                 "FID_PERIOD_DIV_CODE": "D",  # D=일봉
             }
 
-            # EGW00201 rate limit 자동 재시도
+            # EGW00201 rate limit 또는 500 에러 자동 재시도
             resp = None
             for attempt in range(_RATE_LIMIT_MAX_RETRIES):
                 resp = self._auth.get(ApiPath.INDEX_DAILY, params, TrId.INDEX_DAILY)
                 if resp.is_ok():
                     break
+                
+                # 1. 초당 호출 제한 (EGW00201)
                 if resp.error_code == _RATE_LIMIT_CODE:
                     if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
                         logger.warning(
-                            f"[RateLimit] 지수 {index_code} EGW00201 — {_RATE_LIMIT_WAIT}초 대기 후 재시도 "
+                            f"[RateLimit] 지수 {index_code} {resp.error_code} — {_RATE_LIMIT_WAIT}초 대기 후 재시도 "
                             f"({attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
                         )
                         time.sleep(_RATE_LIMIT_WAIT)
+                    continue
+
+                # 2. 모의투자 서버 일시적 오류 (500)
+                if resp.status_code == 500:
+                    if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
+                        wait = 5 * (attempt + 1)
+                        logger.warning(
+                            f"[MockError] 지수 {index_code} 500 Internal Error — {wait}초 대기 후 재시도 "
+                            f"({attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
+                        )
+                        time.sleep(wait)
                     continue
                 break
 

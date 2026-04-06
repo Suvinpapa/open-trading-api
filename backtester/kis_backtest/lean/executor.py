@@ -81,7 +81,10 @@ class LeanRun:
         
         result_file = self.result_json
         if result_file and result_file.exists():
-            self.raw_result = json.loads(result_file.read_text())
+            try:
+                self.raw_result = json.loads(result_file.read_text(encoding="utf-8"))
+            except UnicodeDecodeError:
+                self.raw_result = json.loads(result_file.read_text(encoding="cp949", errors="replace"))
             return self.raw_result
         
         return {}
@@ -199,10 +202,10 @@ class LeanExecutor:
         # Docker 명령어 구성
         cmd = [
             "docker", "run", "--rm",
-            "-v", f"{project_path}:/Algorithm:ro",
-            "-v", f"{data_path}:/Data:ro",
-            "-v", f"{results_path}:/Results",
-            "-v", f"{config_path}:/Lean/Launcher/bin/Debug/config.json:ro",
+            "-v", f"{project_path.as_posix()}:/Algorithm:ro",
+            "-v", f"{data_path.as_posix()}:/Data:ro",
+            "-v", f"{results_path.as_posix()}:/Results",
+            "-v", f"{config_path.as_posix()}:/Lean/Launcher/bin/Debug/config.json:ro",
             LEAN_IMAGE,
         ]
         
@@ -214,12 +217,18 @@ class LeanExecutor:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
             )
             
             finished_at = datetime.now()
             duration = (finished_at - started_at).total_seconds()
-            stdout = result.stdout + result.stderr
+            
+            # Safe formatting to prevent NoneType and str addition
+            out_str = result.stdout if result.stdout is not None else ""
+            err_str = result.stderr if result.stderr is not None else ""
+            stdout = out_str + "\n" + err_str
             
             if result.returncode != 0:
                 error_msg = f"Lean 백테스트 실패 (exit code: {result.returncode})\n{stdout[-2000:]}"

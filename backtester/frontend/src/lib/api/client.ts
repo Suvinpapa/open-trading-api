@@ -2,8 +2,8 @@
  * API 클라이언트 공통 설정
  */
 
-// P2: Frontend 3001 → Backend 8002 (via Next.js rewrites proxy)
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+// Next.js 개발 서버의 30초 timeout 회피를 위해 8003 서버로 다이렉트 통신
+const API_BASE = "http://127.0.0.1:8003";
 
 export interface ApiResponse<T> {
   status: "success" | "error";

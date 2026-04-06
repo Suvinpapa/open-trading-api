@@ -46,7 +46,7 @@ def _load_benchmark_curve(
 
         # CSV 파싱 (YYYYMMDD,open,high,low,close,volume)
         prices = {}
-        with open(csv_path, "r") as f:
+        with open(csv_path, "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split(",")
                 if len(parts) < 5:
@@ -291,7 +291,7 @@ async def prepare_market_data(
         3. 커버리지: 85% 이상이면 캐시 사용
         """
         try:
-            with open(csv_path, 'r') as f:
+            with open(csv_path, 'r', encoding="utf-8") as f:
                 lines = f.readlines()
                 if len(lines) < 2:
                     return False
@@ -425,7 +425,7 @@ async def prepare_benchmark_data(
     # 캐시 확인 (시작일 커버리지 필수)
     if csv_path.exists() and csv_path.stat().st_size > 100:
         try:
-            with open(csv_path, 'r') as f:
+            with open(csv_path, 'r', encoding="utf-8") as f:
                 lines = f.readlines()
                 if len(lines) >= 2:
                     first_date_str = lines[0].split(',')[0].strip()
@@ -464,7 +464,7 @@ async def prepare_benchmark_data(
         bars = provider.get_index_history(index_code, req_start, req_end)
 
         if bars:
-            with open(csv_path, "w") as f:
+            with open(csv_path, "w", encoding="utf-8") as f:
                 for bar in bars:
                     f.write(bar.to_lean_csv_line() + "\n")
             logger.info(f"[Benchmark] 저장 완료: {len(bars)}건")
@@ -593,7 +593,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             strategy_name=definition.name,
         )
         # 코드 저장
-        project.main_py.write_text(code)
+        project.main_py.write_text(code, encoding="utf-8")
 
         lean_run = LeanExecutor.run(project)
 
@@ -737,7 +737,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
             strategy_name=schema.name,
         )
         # 코드 저장
-        project.main_py.write_text(code)
+        project.main_py.write_text(code, encoding="utf-8")
 
         lean_run = LeanExecutor.run(project)
 

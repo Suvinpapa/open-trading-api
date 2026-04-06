@@ -168,7 +168,7 @@ class LeanProjectManager:
         if not config_path.exists():
             return None
         
-        config = json.loads(config_path.read_text())
+        config = json.loads(config_path.read_text(encoding='utf-8'))
         params = config.get("parameters", {})
         
         # 마켓/통화 정보 (기존 프로젝트 호환)
@@ -248,7 +248,7 @@ class LeanProjectManager:
                 continue
             
             try:
-                config = json.loads(config_path.read_text())
+                config = json.loads(config_path.read_text(encoding='utf-8'))
                 params = config.get("parameters", {})
                 
                 # 전략 타입 (config에 없으면 main.py에서 추론)
@@ -290,7 +290,7 @@ class LeanProjectManager:
             return "unknown"
         
         try:
-            content = main_py.read_text()
+            content = main_py.read_text(encoding='utf-8')
             
             # 전략 패턴 매칭
             patterns = {
@@ -331,7 +331,7 @@ class LeanProjectManager:
         summary_file = backtests_dir / "Algorithm-summary.json"
         if summary_file.exists():
             try:
-                data = json.loads(summary_file.read_text())
+                data = json.loads(summary_file.read_text(encoding='utf-8'))
                 stats = data.get("statistics", {})
                 
                 # Net Profit 파싱 (예: "16.985%")
@@ -358,7 +358,7 @@ class LeanProjectManager:
         result_file = backtests_dir / "Algorithm.json"
         if result_file.exists():
             try:
-                data = json.loads(result_file.read_text())
+                data = json.loads(result_file.read_text(encoding='utf-8'))
                 # rollingWindow에서 마지막 portfolioStatistics 사용
                 rolling = data.get("rollingWindow", {})
                 if rolling:
@@ -403,7 +403,7 @@ class LeanProjectManager:
             return False
         
         try:
-            config = json.loads(config_path.read_text())
+            config = json.loads(config_path.read_text(encoding='utf-8'))
             config["display_name"] = display_name
             config_path.write_text(json.dumps(config, indent=2))
             logger.info(f"[Lean] 프로젝트 이름 변경: {run_id} → {display_name}")
@@ -452,7 +452,7 @@ class LeanProjectManager:
         
         if config_path.exists():
             try:
-                config = json.loads(config_path.read_text())
+                config = json.loads(config_path.read_text(encoding='utf-8'))
                 strategy_type = config.get("strategy_type", "unknown")
                 strategy_params = config.get("strategy_params", {})
                 strategy_id = config.get("strategy_id")

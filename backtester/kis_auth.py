@@ -156,7 +156,7 @@ def changeTREnv(token_key, svr="prod", product=_cfg["my_prod"]):
         ak1 = "paper_app"  # 모의투자용 앱키
         ak2 = "paper_sec"  # 모의투자용 앱시크리트
         _isPaper = True
-        _smartSleep = 0.5
+        _smartSleep = 1.0  # 모의투자는 호출 제한(TPS)이 엄격하므로 대기 시간을 늘림
 
     cfg["my_app"] = _cfg[ak1]
     cfg["my_sec"] = _cfg[ak2]
@@ -434,7 +434,11 @@ def _url_fetch(
             time.sleep(wait_time)
         _last_api_call_time = time.monotonic()
 
-    url = f"{getTREnv().my_url}{api_url}"
+    my_url = getTREnv().my_url
+    if my_url is None:
+        raise RuntimeError("KIS 인증 서버 URL이 설정되지 않았습니다. ka.auth()를 먼저 호출하거나 설정을 확인하세요.")
+        
+    url = f"{my_url}{api_url}"
 
     headers = _getBaseHeader()  # 기본 header 값 정리
 
