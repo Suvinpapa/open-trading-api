@@ -2,8 +2,8 @@
  * API 클라이언트 공통 설정
  */
 
-// Next.js 개발 서버의 30초 timeout 회피를 위해 8003 서버로 다이렉트 통신
-const API_BASE = "http://127.0.0.1:8003";
+const isBrowser = typeof window !== 'undefined';
+const API_BASE = isBrowser ? `http://${window.location.hostname}:8003` : "http://127.0.0.1:8003";
 
 export interface ApiResponse<T> {
   status: "success" | "error";

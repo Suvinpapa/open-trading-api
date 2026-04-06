@@ -90,6 +90,7 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:3002",
     "http://127.0.0.1:3300",
     "http://127.0.0.1:5173",
+    "http://192.168.0.134:3300",
 ]
 
 app.add_middleware(
