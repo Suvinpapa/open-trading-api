@@ -338,6 +338,7 @@ class LeanCodeGenerator:
         start_date: str,
         end_date: str,
         initial_capital: Optional[float] = None,
+        resolution: str = "Daily",
     ) -> str:
         """Lean 코드 생성
         
@@ -350,6 +351,7 @@ class LeanCodeGenerator:
         Returns:
             Lean Python 알고리즘 코드
         """
+        self.resolution = resolution  # 해상도 속성 저장 (데이터 클래스 생성 시 참조)
         capital = initial_capital or self.config.initial_capital
         
         # 코드 생성
@@ -364,7 +366,8 @@ class LeanCodeGenerator:
         if slippage_model:
             code_parts.append(slippage_model)
         
-        code_parts.append(self._generate_algorithm(symbols, start_date, end_date, capital))
+        res_enum = resolution.capitalize() if resolution.lower() in ["daily", "minute"] else "Daily"
+        code_parts.append(self._generate_algorithm(symbols, start_date, end_date, capital, resolution=res_enum))
         
         code = "\n\n".join(code_parts)
         try:
@@ -409,13 +412,18 @@ from datetime import datetime, timedelta{candlestick_imports}'''
     
     def _generate_krx_data_class(self) -> str:
         """KRX 커스텀 데이터 클래스 (주식 + 지수)"""
-        return '''
+        # 해상도에 따른 경로 및 시간 포맷 설정 (문자열 리터럴 내에서 중괄호 이스케이프 주의)
+        is_minute = getattr(self, "resolution", "Daily").lower() == "minute"
+        path_segment = "minute" if is_minute else "daily"
+        time_format = "%Y%m%d %H:%M:%S" if is_minute else "%Y%m%d"
+
+        return f'''
 class KRXEquity(PythonData):
     """한국 주식 커스텀 데이터"""
 
     def GetSource(self, config, date, isLive):
         symbol = config.Symbol.Value.lower()
-        source = f"/Data/equity/krx/daily/{symbol}.csv"
+        source = f"/Data/equity/krx/{path_segment}/{{symbol}}.csv"
         return SubscriptionDataSource(source, SubscriptionTransportMedium.LocalFile, FileFormat.Csv)
 
     def Reader(self, config, line, date, isLive):
@@ -427,7 +435,7 @@ class KRXEquity(PythonData):
 
         try:
             cols = line.split(",")
-            data.Time = datetime.strptime(cols[0], "%Y%m%d")
+            data.Time = datetime.strptime(cols[0], "{time_format}")
             data.Value = float(cols[4])
             data["Open"] = float(cols[1])
             data["High"] = float(cols[2])
@@ -445,7 +453,7 @@ class KRXIndex(PythonData):
 
     def GetSource(self, config, date, isLive):
         symbol = config.Symbol.Value.lower()
-        source = f"/Data/index/krx/daily/{symbol}.csv"
+        source = f"/Data/index/krx/daily/{{symbol}}.csv"
         return SubscriptionDataSource(source, SubscriptionTransportMedium.LocalFile, FileFormat.Csv)
 
     def Reader(self, config, line, date, isLive):
@@ -556,6 +564,7 @@ class CustomFeeModel(FeeModel):
         start_date: str,
         end_date: str,
         capital: float,
+        resolution: str = "Daily",
     ) -> str:
         """Algorithm 클래스 생성"""
         data_class = "USEquity" if self.config.market == "us" else "KRXEquity"
@@ -646,7 +655,7 @@ class Algorithm(QCAlgorithm):
 {risk_init}
 
         for symbol_str in "{symbols_str}".split(","):
-            symbol = self.AddData({data_class}, symbol_str, Resolution.Daily).Symbol
+            symbol = self.AddData({data_class}, symbol_str, Resolution.{resolution}).Symbol
             self.symbols.append(symbol)
             self.indicators[symbol] = {{}}
 {candlestick_dict_init}
@@ -655,7 +664,7 @@ class Algorithm(QCAlgorithm):
 {indicator_init}
 {candlestick_init}
 
-        self.SetWarmUp({warmup}, Resolution.Daily)
+        self.SetWarmUp({warmup}, Resolution.{resolution})
 
         for symbol in self.symbols:
             self.Securities[symbol].SetFeeModel(CustomFeeModel()){"""
@@ -679,9 +688,18 @@ class Algorithm(QCAlgorithm):
 {indicator_update_code}
 {candlestick_update}
 
+            # 현재 자산 가치 기록 (분 단위 정밀 그래프용)
+            self.Plot("MinuteValue", "Value", self.Portfolio.TotalPortfolioValue)
+            
             # 지표 준비 확인
             if not all(getattr(ind, 'IsReady', True) for ind in self.indicators[symbol].values()){candlestick_ready_check}:
                 continue
+                
+            # 디버그 로그 (0건 거래 원인 파악용)
+            # RSI와 볼린저 밴드 하단 값을 매 분 출력하여 조건 충족 여부 확인
+            # rsi_val = self.indicators[symbol]['rsi_14'].Current.Value
+            # bb_lower = self.indicators[symbol]['bb_20'].LowerBand.Current.Value
+            # self.Debug(f"[{{self.Time}}] {{symbol}} RSI: {{rsi_val:.2f}}, BB Lower: {{bb_lower:.2f}}, Price: {{price:.2f}}")
 
             # 지표값 가져오기
 {indicator_values}

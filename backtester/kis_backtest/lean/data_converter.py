@@ -57,6 +57,7 @@ class DataConverter:
         df: pd.DataFrame,
         output_dir: Path,
         market_type: str = "krx",
+        resolution: str = "daily",
     ) -> Path:
         """단일 종목 데이터 변환
         
@@ -65,6 +66,7 @@ class DataConverter:
             df: 데이터프레임
             output_dir: 출력 디렉토리
             market_type: "krx" (국내) 또는 "us" (해외)
+            resolution: "daily" 또는 "minute"
         """
         # 컬럼 정규화
         df_out = df.copy()
@@ -83,10 +85,13 @@ class DataConverter:
             if col not in df_out.columns:
                 raise ValueError(f"필수 컬럼 없음: {col}")
         
-        # Lean 포맷으로 변환 (YYYYMMDD,open,high,low,close,volume)
-        df_out['date_str'] = df_out['date'].dt.strftime('%Y%m%d')
+        # Lean 포맷으로 변환 (Daily: YYYYMMDD, Minute: YYYYMMDD HH:mm:ss)
+        if resolution.lower() == "minute":
+            df_out['date_str'] = df_out['date'].dt.strftime('%Y%m%d %H:%M:%S')
+        else:
+            df_out['date_str'] = df_out['date'].dt.strftime('%Y%m%d')
         
-        # 중복 제거 (날짜 기준)
+        # 중복 제거 (날짜/시간 기준)
         df_out = df_out.drop_duplicates(subset=['date_str'], keep='first')
         df_out = df_out.sort_values('date_str')
         
@@ -149,6 +154,7 @@ class DataConverter:
         symbol: str,
         output_dir: Path,
         market_type: str = "krx",
+        resolution: str = "daily",
     ) -> Path:
         """Bar 리스트를 Lean CSV로 변환
         
@@ -157,6 +163,7 @@ class DataConverter:
             symbol: 종목 코드
             output_dir: 출력 디렉토리
             market_type: "krx" 또는 "us"
+            resolution: "daily" 또는 "minute"
         
         Returns:
             생성된 CSV 파일 경로
@@ -183,4 +190,4 @@ class DataConverter:
         output_path.mkdir(parents=True, exist_ok=True)
         
         # 변환 실행
-        return cls._export_symbol(symbol, df, output_path, market_type)
+        return cls._export_symbol(symbol, df, output_path, market_type, resolution=resolution)

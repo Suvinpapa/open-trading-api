@@ -162,6 +162,7 @@ export default function BacktestPage() {
   });
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [initialCapital, setInitialCapital] = useState(100_000_000);
+  const [timeframe, setTimeframe] = useState("daily"); // 해상도: daily 또는 minute
   
   // 거래 비용 설정
   const [commissionRate, setCommissionRate] = useState(0.015); // 0.015%
@@ -269,7 +270,8 @@ export default function BacktestPage() {
           initialCapital,
           commissionRate / 100, // % → 소수점
           taxRate / 100,
-          slippage / 100
+          slippage / 100,
+          timeframe // 해상도 전달
         );
       }
       // 2. 전략 선택 시 프리셋 백테스트
@@ -284,6 +286,7 @@ export default function BacktestPage() {
           tax_rate: taxRate / 100,
           slippage: slippage / 100,
           param_overrides: Object.keys(paramOverrides).length > 0 ? paramOverrides : undefined,
+          timeframe: timeframe // 해상도 전달
         });
       } else {
         throw new Error("전략을 선택하거나 파일을 Import하세요");
@@ -299,7 +302,7 @@ export default function BacktestPage() {
     } finally {
       setIsRunning(false);
     }
-  }, [selectedId, importedYaml, selectedStocks, startDate, endDate, initialCapital, commissionRate, taxRate, slippage, paramOverrides]);
+  }, [selectedId, importedYaml, selectedStocks, startDate, endDate, initialCapital, commissionRate, taxRate, slippage, paramOverrides, timeframe]);
 
   // Y축 범위 계산 (15% 패딩)
   const yAxisDomain = useMemo((): [number, number] => {
@@ -324,7 +327,10 @@ export default function BacktestPage() {
     let peak = -Infinity;
 
     return entries.map(([date, value]) => {
-      const benchmarkPct = benchmarkEntries[date];
+      // 분 단위 타임스탬프(YYYY-MM-DD HH:MM:SS)에서 날짜 부분만 추출하여 벤치마크 조회
+      const dateOnly = date.split(' ')[0];
+      const benchmarkPct = benchmarkEntries[date] ?? benchmarkEntries[dateOnly];
+      
       const benchmarkValue = benchmarkPct != null
         ? initialCapital * (1 + benchmarkPct / 100)
         : null;
@@ -509,6 +515,38 @@ export default function BacktestPage() {
               기간 설정
             </h3>
             <div className="space-y-3">
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block font-semibold flex items-center justify-between">
+                  해상도 (Resolution)
+                  {timeframe === "minute" && (
+                    <span className="text-[10px] text-kis-blue font-normal">최근 1년 이내 데이터만 가능</span>
+                  )}
+                </label>
+                <div className="flex p-1 bg-slate-100 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+                  <button
+                    onClick={() => setTimeframe("daily")}
+                    className={cn(
+                      "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
+                      timeframe === "daily" 
+                        ? "bg-white dark:bg-slate-800 text-kis-blue shadow-sm" 
+                        : "text-slate-500 hover:text-slate-700"
+                    )}
+                  >
+                    일봉 (Daily)
+                  </button>
+                  <button
+                    onClick={() => setTimeframe("minute")}
+                    className={cn(
+                      "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
+                      timeframe === "minute" 
+                        ? "bg-white dark:bg-slate-800 text-kis-blue shadow-sm" 
+                        : "text-slate-500 hover:text-slate-700"
+                    )}
+                  >
+                    분봉 (Minute)
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-slate-500 mb-1 block">시작일</label>

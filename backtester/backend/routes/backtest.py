@@ -116,16 +116,32 @@ def _lean_run_to_api_response(
     # 자산 곡선 (date -> value dict)
     equity_curve = {}
     charts = result.get("charts", {})
-    strategy_equity = charts.get("Strategy Equity", {})
-    series = strategy_equity.get("series", {})
-    equity_series = series.get("Equity", {})
+    
+    # 1순위: 분 단위 정밀 차트 (MinuteValue), 2순위: 기본 차트 (Strategy Equity)
+    target_chart_name = "MinuteValue" if "MinuteValue" in charts else "Strategy Equity"
+    target_chart = charts.get(target_chart_name, {})
+    series = target_chart.get("series", {})
+    
+    # 시리즈명은 MinuteValue의 경우 'Value', Strategy Equity의 경우 'Equity'
+    series_name = "Value" if target_chart_name == "MinuteValue" else "Equity"
+    equity_series = series.get(series_name, {})
     values = equity_series.get("values", [])
-    for point in values:
+    
+    # 데이터 포인트가 너무 많으면 프론트엔드 렉 방지를 위해 샘플링 (최대 2000개)
+    total_points = len(values)
+    step = max(1, total_points // 2000)
+    
+    for i, point in enumerate(values):
+        # N번째 포인트이거나 마지막 포인트일 때만 포함
+        if i % step != 0 and i != total_points - 1:
+            continue
+            
         if isinstance(point, list) and len(point) >= 2:
             try:
                 dt = datetime.fromtimestamp(point[0])
                 val = point[4] if len(point) > 4 else point[1]
-                equity_curve[dt.strftime("%Y-%m-%d")] = float(val)
+                # 분 데이터일 경우 초 단위까지 포함하여 중복 방지
+                equity_curve[dt.strftime("%Y-%m-%d %H:%M:%S")] = float(val)
             except:
                 pass
 
@@ -264,6 +280,7 @@ async def prepare_market_data(
     start_date: str,
     end_date: str,
     workspace: Path,
+    resolution: str = "daily",  # "daily" or "minute"
 ) -> dict:
     """백테스트용 시장 데이터 준비 (KIS API → Lean CSV)
     
@@ -272,8 +289,12 @@ async def prepare_market_data(
     """
     from kis_backtest.providers.kis.auth import KISAuth
     from kis_backtest.providers.kis.data import KISDataProvider
+    from kis_backtest.models import Resolution
     
-    output_dir = workspace / "data" / "equity" / "krx" / "daily"
+    # 해상도에 따른 저장 경로 설정 (대소문자 구분 없이 처리)
+    res_lower = resolution.lower()
+    res_path = "minute" if res_lower == "minute" else "daily"
+    output_dir = workspace / "data" / "equity" / "krx" / res_path
     output_dir.mkdir(parents=True, exist_ok=True)
     
     result = {"downloaded": [], "skipped": [], "errors": []}
@@ -282,14 +303,11 @@ async def prepare_market_data(
     req_start = datetime.strptime(start_date, "%Y-%m-%d").date()
     req_end = datetime.strptime(end_date, "%Y-%m-%d").date()
     
-    def check_date_coverage(csv_path: Path) -> bool:
-        """CSV 파일이 요청 날짜 범위를 커버하는지 확인 (관대한 체크)
-
-        캐싱 정책:
-        1. 종료일: 7일(주말 포함 5영업일) 허용 - 휴장일/주말 대응
-        2. 시작일: 데이터 시작 후면 OK - 과거 데이터 불필요
-        3. 커버리지: 85% 이상이면 캐시 사용
-        """
+    # 지표 웜업을 위해 30일 이전부터 데이터 수집
+    download_start = req_start - timedelta(days=30)
+    
+    def check_date_coverage(csv_path: Path, target_start: date, target_end: date) -> bool:
+        """CSV 파일이 요청 날짜 범위를 커버하는지 확인"""
         try:
             with open(csv_path, 'r', encoding="utf-8") as f:
                 lines = f.readlines()
@@ -303,58 +321,46 @@ async def prepare_market_data(
                 first_date = datetime.strptime(first_date_str, "%Y%m%d").date()
                 last_date = datetime.strptime(last_date_str, "%Y%m%d").date()
 
-                # 관대한 날짜 체크
-                tolerance_days = 7  # 주말 포함 약 5 영업일
-                coverage_threshold = 0.85  # 85% 이상 커버 시 캐시 사용
-
-                # 1. 종료일 체크: tolerance_days 허용
-                if req_end > last_date + timedelta(days=tolerance_days):
-                    logger.info(f"[Data] 종료일 초과: 요청={req_end}, 데이터={last_date} (허용={tolerance_days}일)")
+                # 관대한 날짜 체크 (휴장일 고려)
+                tolerance_days = 7
+                
+                # 1. 종료일 체크
+                if target_end > last_date + timedelta(days=tolerance_days):
                     return False
 
-                # 2. 시작일 체크: 데이터 시작 후면 OK (너무 이전 데이터 요청 시만 실패)
-                # 요청 시작일이 데이터보다 30일 이상 앞서면 재다운로드
-                if req_start < first_date - timedelta(days=30):
-                    logger.info(f"[Data] 시작일 부족: 요청={req_start}, 데이터 시작={first_date}")
+                # 2. 시작일 체크 (웜업 기간까지 포함하는지)
+                if target_start < first_date:
                     return False
 
-                # 3. 커버리지 체크
-                req_days = (req_end - req_start).days
-                if req_days <= 0:
-                    return True  # 당일 요청
-
-                # 실제 커버 가능한 범위 계산
-                effective_start = max(req_start, first_date)
-                effective_end = min(req_end, last_date)
-                covered_days = (effective_end - effective_start).days
-
-                coverage = covered_days / req_days if req_days > 0 else 1.0
-
-                if coverage < coverage_threshold:
-                    logger.info(f"[Data] 커버리지 부족: {coverage:.1%} < {coverage_threshold:.0%}")
-                    return False
-
-                logger.debug(f"[Data] 캐시 사용: {csv_path.name} (커버리지={coverage:.1%})")
                 return True
-
-        except Exception as e:
-            logger.warning(f"[Data] 날짜 체크 실패: {e}")
+        except Exception:
             return False
     
-    # 이미 있는 파일 확인 - 날짜 범위도 체크
+    # 이미 있는 파일 확인
     for symbol in symbols:
         csv_path = output_dir / f"{symbol.lower()}.csv"
         if csv_path.exists() and csv_path.stat().st_size > 100:
-            if check_date_coverage(csv_path):
+            # 해상도에 따른 포맷 검증 (분봉인데 시간 정보가 없는 오염된 파일 방지)
+            is_valid_format = True
+            if res_lower == "minute":
+                try:
+                    with open(csv_path, 'r') as f:
+                        first_line = f.readline()
+                        # 분봉 형식은 'YYYYMMDD HH:MM:SS'로 공백이 있어야 함
+                        if first_line and ' ' not in first_line.split(',')[0]:
+                            is_valid_format = False
+                            logger.warning(f"[Data] {symbol} 분봉 파일 포맷 오류(시간 정보 없음)로 삭제")
+                except Exception:
+                    is_valid_format = False
+
+            if is_valid_format and check_date_coverage(csv_path, download_start, req_end):
                 result["skipped"].append(symbol)
                 continue
             else:
-                # 날짜 범위 불일치 - 파일 삭제 후 재다운로드
-                logger.info(f"[Data] {symbol} 날짜 범위 불일치로 재다운로드")
-                csv_path.unlink()
+                logger.info(f"[Data] {symbol} 유효하지 않거나 날짜 범위 불일치로 재다운로드")
+                csv_path.unlink(missing_ok=True)
     
     symbols_to_download = [s for s in symbols if s not in result["skipped"]]
-    
     if not symbols_to_download:
         logger.info("[Data] 모든 종목 데이터 캐시 사용")
         return result
@@ -364,7 +370,7 @@ async def prepare_market_data(
         auth = KISAuth.from_env()
         provider = KISDataProvider(auth)
     except Exception as e:
-        logger.warning(f"[Data] KIS 인증 실패: {e} - 기존 캐시만 사용")
+        logger.warning(f"[Data] KIS 인증 실패: {e}")
         for s in symbols_to_download:
             result["errors"].append({"symbol": s, "error": str(e)})
         return result
@@ -372,17 +378,29 @@ async def prepare_market_data(
     # 데이터 다운로드
     for symbol in symbols_to_download:
         try:
-            logger.info(f"[Data] 다운로드 중: {symbol}")
-            bars = provider.get_history(symbol, req_start, req_end)
+            logger.info(f"[Data] 다운로드 중: {symbol} ({resolution}, 웜업포함)")
+            
+            bars = []
+            if resolution.lower() == "minute":
+                current_date = download_start
+                import time
+                while current_date <= req_end:
+                    if current_date.weekday() < 5:
+                        day_bars = provider.get_history(symbol, current_date, current_date, Resolution.MINUTE)
+                        if day_bars:
+                            bars.extend(day_bars)
+                    current_date += timedelta(days=1)
+                    if current_date <= req_end:
+                        time.sleep(0.1)
+            else:
+                bars = provider.get_history(symbol, download_start, req_end, Resolution.DAILY)
             
             if bars:
-                # Lean CSV 변환
-                DataConverter.bars_to_lean_csv(bars, symbol, output_dir)
+                DataConverter.bars_to_lean_csv(bars, symbol, output_dir, resolution=resolution)
                 result["downloaded"].append(symbol)
-                logger.info(f"[Data] 완료: {symbol} ({len(bars)} bars)")
+                logger.info(f"[Data] 완료: {symbol} ({len(bars)} bars, 웜업포함)")
             else:
                 result["errors"].append({"symbol": symbol, "error": "데이터 없음"})
-                
         except Exception as e:
             logger.error(f"[Data] {symbol} 다운로드 실패: {e}")
             result["errors"].append({"symbol": symbol, "error": str(e)})
@@ -526,6 +544,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             start_date=start_date,
             end_date=end_date,
             workspace=workspace,
+            resolution=request.timeframe,  # 해상도 전달
         )
         logger.info(f"[Data] 결과: {data_result}")
         
@@ -564,6 +583,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             start_date=start_date,
             end_date=end_date,
             initial_capital=request.initial_capital,
+            resolution=request.timeframe,  # 해상도 전달
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Code generation failed: {e}")
@@ -631,6 +651,7 @@ class CustomBacktestRequest(BaseModel):
     commission_rate: Optional[float] = 0.00015  # 수수료율 (기본 0.015%)
     tax_rate: Optional[float] = 0.002  # 거래세율 (기본 0.2%)
     slippage: Optional[float] = 0.0  # 슬리피지 (기본 0%)
+    timeframe: str = "daily"  # 해상도 (daily 또는 minute)
 
 
 @router.post(
@@ -667,6 +688,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
             start_date=request.start_date,
             end_date=request.end_date,
             workspace=workspace,
+            resolution=request.timeframe,  # 해상도 전달
         )
         logger.info(f"[Data] 결과: {data_result}")
         
@@ -708,6 +730,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
             start_date=request.start_date,
             end_date=request.end_date,
             initial_capital=request.initial_capital,
+            resolution=request.timeframe,  # 해상도 전달
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Code generation failed: {e}")

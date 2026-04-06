@@ -27,7 +27,8 @@ export async function runCustomBacktest(
   initialCapital: number,
   commissionRate?: number,
   taxRate?: number,
-  slippage?: number
+  slippage?: number,
+  timeframe: string = "daily"
 ): Promise<BacktestResponse> {
   const request: CustomBacktestRequest = {
     yaml_content: yamlContent,
@@ -38,6 +39,7 @@ export async function runCustomBacktest(
     commission_rate: commissionRate,
     tax_rate: taxRate,
     slippage,
+    timeframe,
   };
   return apiPost("/api/backtest/run-custom", request);
 }

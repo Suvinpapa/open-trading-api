@@ -1,0 +1,86 @@
+version: "1.0"
+
+metadata:
+  name: "로스 카메론 RSI 3단 콤보 (Ross Cameron RSI 3-Combo)"
+  description: "RSI 40 이하(과매도 영역) + 볼린저 밴드 하단 반등(Trigger) + MACD 상승 추세(Confirmation) 조합"
+  author: "Ross Cameron (Style)"
+  category: "mean_reversion"
+  tags:
+    - reversal
+    - rsi
+    - bollinger_bands
+    - macd
+    - ross_cameron
+
+strategy:
+  id: ross_cameron_rsi_3combo
+  category: mean_reversion
+  
+  params:
+    rsi_period:
+      default: 9
+      type: int
+    bb_period:
+      default: 20
+      type: int
+    bb_std:
+      default: 2.0
+      type: float
+    macd_fast:
+      default: 12
+      type: int
+    macd_slow:
+      default: 26
+      type: int
+    macd_signal:
+      default: 9
+      type: int
+
+  indicators:
+    - id: rsi
+      alias: rsi_14
+      params:
+        period: $rsi_period
+    - id: bollinger
+      alias: bb_20
+      params:
+        period: $bb_period
+        std: $bb_std
+    - id: macd
+      alias: macd_12_26
+      params:
+        fast: $macd_fast
+        slow: $macd_slow
+        signal: $macd_signal
+
+  entry:
+    logic: AND
+    conditions:
+      - indicator: rsi_14
+        operator: less_equal
+        value: 45
+      - indicator: close
+        operator: cross_above
+        compare_to: bb_20
+        compare_output: lower
+      - indicator: macd_12_26
+        indicator_output: value
+        operator: greater_than
+        compare_to: macd_12_26
+        compare_output: signal
+
+  exit:
+    logic: OR
+    conditions:
+      - indicator: rsi_14
+        operator: greater_equal
+        value: 70
+      - indicator: close
+        operator: cross_above
+        compare_to: bb_20
+        compare_output: upper
+
+risk:
+  stop_loss_pct: 2.0
+  take_profit_pct: 6.0
+  max_position_size: 1.0

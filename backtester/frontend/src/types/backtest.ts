@@ -12,6 +12,7 @@ export interface BacktestRequest {
   tax_rate?: number;
   slippage?: number;
   param_overrides?: Record<string, number>;
+  timeframe?: string;
 }
 
 export interface CustomBacktestRequest {
@@ -23,6 +24,7 @@ export interface CustomBacktestRequest {
   commission_rate?: number;
   tax_rate?: number;
   slippage?: number;
+  timeframe?: string;
 }
 
 /**

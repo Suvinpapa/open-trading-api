@@ -31,6 +31,10 @@ class BacktestRequest(BaseModel):
         default=0.0,
         description="슬리피지 (기본 0 = 0%)"
     )
+    timeframe: str = Field(
+        default="daily",
+        description="해상도 (daily 또는 minute)"
+    )
 
     class Config:
         json_schema_extra = {
