@@ -149,8 +149,6 @@ yarn-error.log*
 .pnpm-debug.log*
 *_logs/
 
-# ===== Lock files =====
-*.lock
 
 # ===== KIS (민감 정보) =====
 KIS/
