@@ -35,24 +35,24 @@ strategy:
       description: "손절 %"
 
   indicators:
-    - id: sma
-      alias: ma
+    - id: disparity
+      alias: disp
       params:
         period: $period
 
   entry:
     logic: AND
     conditions:
-      - indicator: close
+      - indicator: disp
         operator: less_than
-        compare_to: ma
+        value: "100 - $threshold_pct"
 
   exit:
     logic: AND
     conditions:
-      - indicator: close
+      - indicator: disp
         operator: greater_than
-        compare_to: ma
+        value: 100
 
 risk:
   stop_loss:

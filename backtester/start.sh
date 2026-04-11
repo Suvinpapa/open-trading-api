@@ -1,18 +1,18 @@
 #!/bin/bash
 # P2 Backtest System - Start Script
-# Frontend: 3001, Backend: 8002
+# Frontend: 3300, Backend: 8003
 
 # Get absolute path of script directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== P2 Backtest System ==="
-echo "Frontend: http://localhost:3001"
-echo "Backend:  http://localhost:8002"
+echo "Frontend: http://localhost:3300"
+echo "Backend:  http://localhost:8003"
 echo ""
 
 # Kill existing processes on these ports
-lsof -ti:3001 | xargs kill -9 2>/dev/null
-lsof -ti:8002 | xargs kill -9 2>/dev/null
+lsof -ti:3300 | xargs kill -9 2>/dev/null
+lsof -ti:8003 | xargs kill -9 2>/dev/null
 
 # Check Lean data files
 SYMBOL_PROPS="$SCRIPT_DIR/.lean-workspace/data/symbol-properties/symbol-properties-database.csv"
@@ -24,8 +24,8 @@ fi
 
 # Start backend
 cd "$SCRIPT_DIR"
-echo "[Backend] Starting on port 8002..."
-uv run python -m uvicorn backend.main:app --host 0.0.0.0 --port 8002 --reload &
+echo "[Backend] Starting on port 8003..."
+uv run python -m uvicorn backend.main:app --host 0.0.0.0 --port 8003 --reload &
 BACKEND_PID=$!
 
 # Wait for backend

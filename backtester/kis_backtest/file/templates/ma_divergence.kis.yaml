@@ -35,24 +35,24 @@ strategy:
       description: "매도 이격도 (price/SMA)"
 
   indicators:
-    - id: sma
-      alias: ma
+    - id: disparity
+      alias: disp
       params:
         period: $period
 
   entry:
     logic: AND
     conditions:
-      - indicator: close
+      - indicator: disp
         operator: less_than
-        compare_to: ma
+        value: "$buy_ratio * 100"
 
   exit:
     logic: AND
     conditions:
-      - indicator: close
+      - indicator: disp
         operator: greater_than
-        compare_to: ma
+        value: "$sell_ratio * 100"
 
 risk:
   stop_loss:

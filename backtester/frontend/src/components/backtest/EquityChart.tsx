@@ -80,7 +80,18 @@ function EquityTooltipInner({
   if (!active || !payload?.length) return null;
 
   const data = payload[0].payload as ChartDataPoint;
-  const trades = tradeMarkers.filter((t) => t.date === data.date);
+  
+  // 툴팁에서도 날짜와 시간이 미세하게 다를 수 있으므로 근사치 매칭으로 거래 내역 추출
+  const trades = tradeMarkers.filter((t) => {
+    // 1. 문자열 완전 일치 확인
+    if (t.date === data.date) return true;
+    
+    // 2. 날짜가 같고 시간 오차가 24시간 이내인 가장 가까운 데이터인지 확인 (간소화하여 날짜 일치로 우선 처리)
+    const tDate = t.date.split(' ')[0];
+    const dDate = data.date.split(' ')[0];
+    return tDate === dDate;
+  });
+
   const excessReturn =
     data.benchmarkPct !== null ? data.returnPct - data.benchmarkPct : null;
 
@@ -394,7 +405,52 @@ export function EquityChart({
             />
             {/* Buy/Sell markers (grouped by date+type) */}
             {groupedMarkers.map((marker, idx) => {
-              const point = chartData.find((d) => d.date === marker.date);
+              // 타임존 영향을 피하고 다양한 구분자(점, 하이픈 등)에 대응하는 철벽 파싱 헬퍼
+              const parseToTimestamp = (dateStr: string) => {
+                const parts = dateStr.match(/\d+/g);
+                if (!parts || parts.length < 3) return 0;
+                
+                const y = parseInt(parts[0]);
+                const m = parseInt(parts[1]) - 1;
+                const d = parseInt(parts[2]);
+                const hh = parts[3] ? parseInt(parts[3]) : 0;
+                const mm = parts[4] ? parseInt(parts[4]) : 0;
+                const ss = parts[5] ? parseInt(parts[5]) : 0;
+                
+                // 로컬 날짜 객체 생성 (일봉/분봉 모두 동일한 로컬 타임라인 적용)
+                return new Date(y, m, d, hh, mm, ss).getTime();
+              };
+
+              // 1. 우선 문자열 일치로 시도
+              let point = chartData.find((d) => d.date === marker.date);
+              
+              // 2. 일치가 없다면(샘플링/포맷 차이 등) 밀리초 단위로 가장 가까운 포인트 검색
+              if (!point) {
+                const markerTime = parseToTimestamp(marker.date);
+                if (markerTime === 0) return null;
+
+                let minDiff = Infinity;
+                let nearestPoint = null;
+                
+                for (const d of chartData) {
+                  const pointTime = parseToTimestamp(d.date);
+                  const diff = Math.abs(pointTime - markerTime);
+                  
+                  if (diff < minDiff) {
+                    minDiff = diff;
+                    nearestPoint = d;
+                  }
+                  
+                  // 데이터가 정렬되어 있으므로 오차가 다시 커지기 시작하면 중단
+                  if (pointTime > markerTime && diff > minDiff) break;
+                }
+                
+                // 하루(86400000ms) 이내의 오차 범위에 포인트가 있다면 해당 지점에 마커 표시
+                if (minDiff <= 86400000) {
+                  point = nearestPoint as ChartDataPoint;
+                }
+              }
+
               if (!point) return null;
 
               // Check if both buy and sell exist on the same date
@@ -412,9 +468,9 @@ export function EquityChart({
               return (
                 <ReferenceDot
                   key={`${marker.date}-${marker.type}-${idx}`}
-                  x={marker.date}
+                  x={point.date} // 원래 거래 시점(marker.date) 대신 차트상에 실존하는 지점(point.date)을 사용
                   y={point.value + yOffset}
-                  r={r}
+                  r={Math.max(r, 6)} // 가독성을 위해 최소 반지름을 6으로 상향
                   fill={
                     marker.type === "buy"
                       ? CHART_COLORS.buy

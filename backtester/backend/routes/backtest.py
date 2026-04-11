@@ -140,8 +140,8 @@ def _lean_run_to_api_response(
             try:
                 dt = datetime.fromtimestamp(point[0])
                 val = point[4] if len(point) > 4 else point[1]
-                # 분 데이터일 경우 초 단위까지 포함하여 중복 방지
-                equity_curve[dt.strftime("%Y-%m-%d %H:%M:%S")] = float(val)
+                # 분 데이터일 경우 초 단위를 00으로 고정 (프론트엔드 매칭용)
+                equity_curve[dt.strftime("%Y-%m-%d %H:%M:00")] = float(val)
             except:
                 pass
 
@@ -156,12 +156,26 @@ def _lean_run_to_api_response(
         symbol_data = order.get("symbol", {})
         symbol_code = symbol_data.get("value", "") if isinstance(symbol_data, dict) else str(symbol_data)
         direction = order.get("direction", 0)
+        
+        # 거래 시간 포맷 통일 (자산 곡선과 일치시키기 위해 %H:%M:%S 포함)
+        order_time_str = order.get("time", "")
+        try:
+            # ISO 8601 (2024-02-01T09:01:00Z) 파싱
+            if "T" in order_time_str:
+                trade_dt = datetime.fromisoformat(order_time_str.replace("Z", "+00:00"))
+                # 초 단위를 00으로 고정하여 데이터 포인트와 일치시킴
+                formatted_time = trade_dt.strftime("%Y-%m-%d %H:%M:00")
+            else:
+                formatted_time = order_time_str
+        except Exception:
+            formatted_time = order_time_str
+
         trades.append({
             "symbol": symbol_code.upper(),
             "direction": "Buy" if direction == 0 else "Sell",
             "quantity": abs(order.get("quantity", 0)),
             "price": order.get("price", 0),
-            "time": order.get("time", ""),
+            "time": formatted_time,
         })
 
     return {

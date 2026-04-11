@@ -355,7 +355,7 @@ export default function BacktestPage() {
     if (!result?.trades || result.trades.length === 0) return [];
 
     return result.trades.map((trade) => ({
-      date: trade.time.split(/[T ]/)[0],
+      date: trade.time, // 백엔드에서 통일된 형식(%Y-%m-%d %H:%M:%S)을 그대로 사용
       type: trade.direction.toLowerCase() as "buy" | "sell",
       price: trade.price,
     }));
@@ -414,7 +414,7 @@ export default function BacktestPage() {
                 백테스트를 실행하려면 먼저 백엔드 서버를 시작하세요:
               </p>
               <code className="block mt-2 px-3 py-2 bg-red-100 dark:bg-red-900/40 rounded-lg text-sm font-mono text-red-800 dark:text-red-300">
-                cd backend && uv run uvicorn main:app --port 8002 --reload
+                cd backend && uv run uvicorn main:app --port 8003 --reload
               </code>
             </div>
           </div>
