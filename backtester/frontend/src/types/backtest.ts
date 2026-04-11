@@ -117,3 +117,37 @@ export interface DrawdownDataPoint {
   date: string;
   drawdown: number;
 }
+
+
+/**
+ * 일괄 백테스트 (전략 토너먼트) 타입
+ */
+export interface BulkBacktestRequest {
+  strategy_ids?: string[];
+  symbols: string[];
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  timeframe?: string;
+  param_overrides?: Record<string, Record<string, any>>;
+}
+
+export interface BulkBacktestResult {
+  strategy_id: string;
+  strategy_name: string;
+  total_return: number;
+  sharpe_ratio: number;
+  max_drawdown: number;
+  win_rate: number;
+  total_trades: number;
+  success: boolean;
+  error?: string;
+  parameters?: Record<string, any>;
+}
+
+export interface BulkBacktestResponse {
+  success: boolean;
+  results: BulkBacktestResult[];
+  benchmark_return?: number;
+  message?: string;
+}

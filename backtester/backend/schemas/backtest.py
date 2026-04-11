@@ -57,3 +57,39 @@ class BacktestResponse(BaseModel):
     success: bool = True
     data: Dict[str, Any]
     message: Optional[str] = None
+
+
+class BulkBacktestRequest(BaseModel):
+    """일괄 백테스트 요청"""
+    strategy_ids: Optional[List[str]] = Field(default=None, description="테스트할 전략 ID 리스트 (없으면 전체)")
+    symbols: List[str] = Field(..., description="종목 코드 리스트")
+    start_date: Union[str, date] = Field(..., description="시작일 (YYYY-MM-DD)")
+    end_date: Union[str, date] = Field(..., description="종료일 (YYYY-MM-DD)")
+    initial_capital: float = Field(default=100_000_000, description="초기 자본")
+    timeframe: str = Field(default="daily", description="해상도")
+    param_overrides: Optional[Dict[str, Dict[str, Any]]] = Field(
+        default=None,
+        description="전략별 파라미터 오버라이드 (예: {'rsi': {'period': 20}})"
+    )
+
+
+class BulkBacktestResult(BaseModel):
+    """개별 전략 성과 요약"""
+    strategy_id: str
+    strategy_name: str
+    total_return: float
+    sharpe_ratio: float
+    max_drawdown: float
+    win_rate: float
+    total_trades: int
+    success: bool
+    error: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = Field(default=None, description="세부 파라미터 값")
+
+
+class BulkBacktestResponse(BaseModel):
+    """일괄 백테스트 응답"""
+    success: bool = True
+    results: List[BulkBacktestResult]
+    benchmark_return: Optional[float] = Field(default=None, description="벤치마크(KOSPI) 수익률")
+    message: Optional[str] = None

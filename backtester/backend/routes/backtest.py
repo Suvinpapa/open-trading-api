@@ -3,6 +3,7 @@
 Lean Docker 기반 백테스트 실행.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 from datetime import date, datetime, timedelta
@@ -14,6 +15,9 @@ from pydantic import BaseModel
 from backend.schemas.backtest import (
     BacktestRequest,
     BacktestResponse,
+    BulkBacktestRequest,
+    BulkBacktestResult,
+    BulkBacktestResponse,
 )
 from kis_backtest.strategies.registry import StrategyRegistry
 from kis_backtest.codegen.generator import LeanCodeGenerator, CodeGenConfig
@@ -22,6 +26,14 @@ from kis_backtest.lean.project_manager import LeanProjectManager
 from kis_backtest.lean.data_converter import DataConverter
 from kis_backtest.lean.result_formatter import parse_lean_value
 import kis_backtest.strategies.preset  # 전략 자동 등록
+
+
+router = APIRouter(
+    prefix="/backtest",
+    tags=["backtest"],
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _load_benchmark_curve(
@@ -798,3 +810,157 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"백테스트 실행 오류: {e}")
+
+
+@router.post(
+    "/bulk",
+    response_model=BulkBacktestResponse,
+    summary="일괄 백테스트 실행",
+    description="선택된 여러 전략을 한 번에 백테스트하여 성과를 요약합니다.",
+)
+async def run_bulk_backtest(request: BulkBacktestRequest) -> BulkBacktestResponse:
+    """여러 전략을 일괄적으로 테스트하고 요약 결과를 반환합니다."""
+    # 1. 대상 전략 결정
+    target_ids = request.strategy_ids
+    if not target_ids:
+        target_ids = [s["id"] for s in StrategyRegistry.list_all()]
+
+    # 2. 공통 설정 준비
+    manager = LeanProjectManager()
+    workspace = manager.workspace
+    start_date = request.start_date.isoformat() if isinstance(request.start_date, date) else request.start_date
+    end_date = request.end_date.isoformat() if isinstance(request.end_date, date) else request.end_date
+
+    # 3. 데이터 일괄 준비 (한 번만 실행)
+    try:
+        await prepare_market_data(
+            symbols=request.symbols,
+            start_date=start_date,
+            end_date=end_date,
+            workspace=workspace,
+            resolution=request.timeframe,
+        )
+        await prepare_benchmark_data(
+            start_date=start_date,
+            end_date=end_date,
+            workspace=workspace,
+        )
+    except Exception as e:
+        logger.error(f"[Bulk] 데이터 준비 실패: {e}")
+        # 데이터 실패 시 전체 중단
+        raise HTTPException(status_code=500, detail=f"데이터 준비 실패: {e}")
+
+    # 4. 개별 전략 실행 헬퍼 함수 (병렬 처리용)
+    semaphore = asyncio.Semaphore(2)  # 동시 실행 2개 제한
+
+    async def _run_single_bulk_strategy(strategy_id: str) -> BulkBacktestResult:
+        async with semaphore:
+            display_name = strategy_id
+            try:
+                # 전략 메타데이터 조회
+                meta = StrategyRegistry.get_metadata(strategy_id)
+                if meta and meta.get("name"):
+                    display_name = meta.get("name")
+                
+                # 전략 존재 여부 확인
+                if not StrategyRegistry.get(strategy_id):
+                    return BulkBacktestResult(
+                        strategy_id=strategy_id, strategy_name=display_name,
+                        total_return=0.0, sharpe_ratio=0.0, max_drawdown=0.0, win_rate=0.0,
+                        total_trades=0, success=False, error="등록되지 않은 프리셋 전략입니다."
+                    )
+                
+                # 오버라이드 적용
+                overrides = request.param_overrides.get(strategy_id) if request.param_overrides else None
+                definition = StrategyRegistry.build(strategy_id, **(overrides or {}))
+
+                # 코드 생성
+                config = CodeGenConfig(
+                    initial_capital=request.initial_capital,
+                    commission_rate=0.00015,
+                    tax_rate=0.002,
+                    slippage=0.0,
+                )
+                generator = LeanCodeGenerator(definition, config=config)
+                code = generator.generate(
+                    symbols=request.symbols,
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_capital=request.initial_capital,
+                    resolution=request.timeframe,
+                )
+
+                # Lean 프로젝트 생성
+                run_id = f"bulk_{strategy_id}_{datetime.now().strftime('%H%M%S')}"
+                project = manager.create_project(
+                    run_id=run_id,
+                    symbols=request.symbols,
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_capital=request.initial_capital,
+                    strategy_id=strategy_id,
+                    strategy_name=display_name,
+                )
+                project.main_py.write_text(code, encoding="utf-8")
+                
+                # Lean 실행 (병렬 실행을 위해 thread에서 실행)
+                logger.info(f"[Bulk] 전략 실행 시작: {display_name} ({strategy_id})")
+                lean_run = await asyncio.to_thread(LeanExecutor.run, project, timeout=600)
+                logger.info(f"[Bulk] 전략 실행 완료: {display_name} - {'성공' if lean_run.success else '실패'}")
+                
+                if lean_run.success:
+                    stats = lean_run.get_statistics()
+                    
+                    # 핵심 지표 추출
+                    total_return = parse_lean_value(stats.get("Net Profit", "0%"))
+                    sharpe = parse_lean_value(stats.get("Sharpe Ratio", "0"))
+                    mdd = parse_lean_value(stats.get("Drawdown", "0%"))
+                    win_rate = parse_lean_value(stats.get("Win Rate", "0%"))
+                    total_trades = int(parse_lean_value(stats.get("Total Orders", "0")))
+
+                    return BulkBacktestResult(
+                        strategy_id=strategy_id, strategy_name=display_name,
+                        total_return=total_return, sharpe_ratio=sharpe,
+                        max_drawdown=mdd, win_rate=win_rate,
+                        total_trades=total_trades, success=True,
+                        parameters=definition.get_default_params()
+                    )
+                else:
+                    return BulkBacktestResult(
+                        strategy_id=strategy_id, strategy_name=display_name,
+                        total_return=0.0, sharpe_ratio=0.0, max_drawdown=0.0, win_rate=0.0,
+                        total_trades=0, success=False, error="백테스트 실행 실패"
+                    )
+
+            except Exception as e:
+                logger.error(f"[Bulk] 전략 {strategy_id} 처리 중 오류: {e}")
+                return BulkBacktestResult(
+                    strategy_id=strategy_id, strategy_name=display_name,
+                    total_return=0.0, sharpe_ratio=0.0, max_drawdown=0.0, win_rate=0.0,
+                    total_trades=0, success=False, error=str(e)
+                )
+
+    # 모든 전략 병렬 실행 요청
+    tasks = [_run_single_bulk_strategy(s_id) for s_id in target_ids]
+    results = await asyncio.gather(*tasks)
+
+    if not results:
+        raise HTTPException(status_code=400, detail="테스트 가능한 유효한 전략이 선택되지 않았습니다.")
+
+    # 5. 벤치마크 수익률 계산
+    benchmark_val = None
+    try:
+        curve = _load_benchmark_curve(workspace, start_date, end_date)
+        if curve:
+            # 마지막 날짜의 수익률이 전체 수익률
+            last_date = sorted(curve.keys())[-1]
+            benchmark_val = curve[last_date]
+    except Exception as e:
+        logger.warning(f"[Bulk] 벤치마크 수익률 계산 실패: {e}")
+
+    return BulkBacktestResponse(
+        success=True,
+        results=results,
+        benchmark_return=benchmark_val,
+        message=f"{len(results)}개 전략 테스트 완료"
+    )

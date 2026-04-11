@@ -16,14 +16,16 @@ import {
   DollarSign,
   Percent,
   ChevronDown,
+  ClipboardCopy,
+  MessageSquare,
 } from "lucide-react";
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
-import { listStrategies, runBacktest, runCustomBacktest } from "@/lib/api";
+import { listStrategies, runBacktest, runCustomBacktest, runBulkBacktest } from "@/lib/api";
 import { FileDropZone } from "@/components/file";
 import { StockInput } from "@/components/symbols";
 import { EquityChart } from "@/components/backtest";
 import type { ChartDataPoint, TradeMarker } from "@/components/backtest";
-import type { Strategy, BacktestResult, ParamDefinition } from "@/types";
+import type { Strategy, BacktestResult, ParamDefinition, BulkBacktestResult } from "@/types";
 
 // 통계 카드 컴포넌트
 function StatCard({
@@ -145,6 +147,207 @@ function MetricsGroup({
   );
 }
 
+// 일괄 백테스트 결과 테이블 (순위표)
+function BulkResultsTable({
+  results,
+  sortConfig,
+  onSort,
+  benchmarkReturn,
+}: {
+  results: BulkBacktestResult[];
+  sortConfig: { key: keyof BulkBacktestResult; desc: boolean };
+  onSort: (key: keyof BulkBacktestResult) => void;
+  benchmarkReturn: number | null;
+}) {
+  const sortedResults = [...results].sort((a, b) => {
+    const aVal = a[sortConfig.key];
+    const bVal = b[sortConfig.key];
+    
+    if (typeof aVal === 'number' && typeof bVal === 'number') {
+      return sortConfig.desc ? bVal - aVal : aVal - bVal;
+    }
+    if (typeof aVal === 'string' && typeof bVal === 'string') {
+      return sortConfig.desc 
+        ? bVal.localeCompare(aVal, 'ko') 
+        : aVal.localeCompare(bVal, 'ko');
+    }
+    return 0;
+  });
+
+  const headers: { key: keyof BulkBacktestResult; label: string }[] = [
+    { key: "strategy_name", label: "전략명" },
+    { key: "total_return", label: "누적 수익률" },
+    { key: "sharpe_ratio", label: "Sharpe" },
+    { key: "max_drawdown", label: "MDD" },
+    { key: "win_rate", label: "승률" },
+    { key: "total_trades", label: "거래수" },
+  ];
+
+  return (
+    <div id="bulk-results-section" className="card border-kis-blue shadow-kis-blue/10">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+          <Zap className="w-5 h-5 text-kis-blue" />
+          전략 토너먼트 성과 순위표
+          {benchmarkReturn !== null && (
+            <span className="ml-2 text-xs font-normal text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
+              KOSPI: <span className={cn("font-mono font-bold", benchmarkReturn >= 0 ? "text-profit" : "text-loss")}>
+                {benchmarkReturn >= 0 ? "+" : ""}{benchmarkReturn.toFixed(2)}%
+              </span>
+            </span>
+          )}
+        </h3>
+        <span className="text-xs text-kis-blue font-medium bg-kis-blue/5 px-2 py-1 rounded-full border border-kis-blue/20">
+          Ranked by {headers.find(h => h.key === sortConfig.key)?.label}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
+              <th className="pb-3 pr-4 font-semibold text-center w-12">순위</th>
+              {headers.map((h) => (
+                <th
+                  key={h.key}
+                  className="pb-3 pr-4 font-semibold cursor-pointer hover:text-kis-blue transition-colors group"
+                  onClick={() => onSort(h.key)}
+                >
+                  <div className="flex items-center gap-1">
+                    {h.label}
+                    <ChevronDown className={cn(
+                      "w-3 h-3 transition-transform opacity-40 group-hover:opacity-100",
+                      sortConfig.key === h.key && "opacity-100 text-kis-blue",
+                      sortConfig.key === h.key && !sortConfig.desc && "rotate-180"
+                    )} />
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sortedResults.map((res, i) => (
+              <tr key={res.strategy_id} className="border-b border-slate-100 dark:border-slate-800 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                <td className="py-3 pr-4 text-center font-bold text-slate-400">
+                  {i === 0 ? <span className="text-amber-500">🥇</span> : i === 1 ? <span className="text-slate-400">🥈</span> : i === 2 ? <span className="text-amber-700">🥉</span> : i + 1}
+                </td>
+                <td className="py-3 pr-4 font-medium text-slate-900 dark:text-white">
+                  <div className="flex flex-col">
+                    <span>{res.strategy_name}</span>
+                    {!res.success && (
+                      <span className="text-[10px] text-loss font-normal">
+                        실패: {res.error || "알 수 없는 오류"}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className={cn("py-3 pr-4 font-mono font-bold", res.success && res.total_return >= 0 ? "text-profit" : res.success ? "text-loss" : "text-slate-300")}>
+                  {res.success ? formatPercent(res.total_return) : "-"}
+                </td>
+                <td className="py-3 pr-4 font-mono text-slate-500">{res.success ? res.sharpe_ratio.toFixed(2) : "-"}</td>
+                <td className="py-3 pr-4 font-mono text-slate-400">{res.success ? formatPercent(-Math.abs(res.max_drawdown)) : "-"}</td>
+                <td className="py-3 pr-4 font-mono text-slate-500">{res.success ? formatPercent(res.win_rate) : "-"}</td>
+                <td className="py-3 pr-4 text-slate-500">{res.success ? `${res.total_trades}회` : "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// 일괄 테스트 파라미터 표 컴포넌트
+function BulkParamsTable({ 
+  selectedIds,
+  results, 
+  overrides, 
+  onChange,
+  allStrategies
+}: { 
+  selectedIds: string[],
+  results: BulkBacktestResult[] | null, 
+  overrides: Record<string, Record<string, any>>,
+  onChange: (strategyId: string, key: string, value: number) => void,
+  allStrategies: any[]
+}) {
+  if (!selectedIds || selectedIds.length === 0) return null;
+
+  // 프리셋 전략들만 표시 (ID에 .kis.yaml이 포함되지 않은 것)
+  const displayIds = selectedIds.filter(id => !id.endsWith('.kis.yaml'));
+  if (displayIds.length === 0) return null;
+
+  return (
+    <div className="card bg-slate-50/50 dark:bg-slate-900/20 border-slate-200 dark:border-slate-800 mt-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+          <Target className="w-4 h-4" />
+          전략별 파라미터 직접 조정
+        </h3>
+        <span className="text-[10px] text-slate-400">수정 후 상단의 테스트 실행 버튼을 다시 누르세요</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-slate-500 border-b border-slate-200 dark:border-slate-800">
+              <th className="pb-2 pr-4 font-semibold w-1/4">전략명</th>
+              <th className="pb-2 font-semibold">파라미터 설정 (Label, Min~Max)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {displayIds.map((id) => {
+              const strategyMeta = allStrategies.find(s => s.id === id);
+              if (!strategyMeta) return null;
+              
+              const res = results?.find(r => r.strategy_id === id);
+              const paramsMeta = strategyMeta.params || {};
+
+              return (
+                <tr key={id} className="border-b border-slate-100 dark:border-slate-800/50 last:border-0 hover:bg-white/50 dark:hover:bg-white/5 transition-colors">
+                  <td className="py-4 pr-4 font-medium text-slate-700 dark:text-slate-200 align-top">
+                    <div className="flex flex-col">
+                      <span>{strategyMeta.name}</span>
+                      {res && !res.success && (
+                        <span className="text-[10px] text-loss">실패: {res.error}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-2">
+                    <div className="flex flex-wrap gap-4">
+                      {Object.keys(paramsMeta).map((key) => {
+                        const paramMeta = paramsMeta[key];
+                        const val = overrides[id]?.[key] ?? res?.parameters?.[key] ?? paramMeta.default;
+                        
+                        return (
+                          <div key={key} className="flex flex-col gap-1.5 py-1">
+                            <label className="text-[10px] text-slate-500 font-medium">
+                              {paramMeta?.label || key}
+                            </label>
+                            <input
+                              type="number"
+                              value={val}
+                              min={paramMeta?.min}
+                              max={paramMeta?.max}
+                              onChange={(e) => onChange(id, key, Number(e.target.value))}
+                              className="w-24 px-2 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-xs font-mono focus:border-kis-blue focus:ring-1 focus:ring-kis-blue outline-none transition-all"
+                            />
+                            <span className="text-[9px] text-slate-400 font-mono text-center">
+                              {paramMeta.min}~{paramMeta.max}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function BacktestPage() {
   // 데이터 (templates + strategies 합쳐서 중복 제거)
   const [allStrategies, setAllStrategies] = useState<Strategy[]>([]);
@@ -171,6 +374,17 @@ export default function BacktestPage() {
   
   // 파라미터 오버라이드 (전략 파라미터 조정용)
   const [paramOverrides, setParamOverrides] = useState<Record<string, number>>({});
+  
+  // 일괄 테스트 (토너먼트) 설정
+  const [selectedBulkIds, setSelectedBulkIds] = useState<string[]>([]);
+  const [isBulkTesting, setIsBulkTesting] = useState(false);
+  const [bulkResults, setBulkResults] = useState<BulkBacktestResult[] | null>(null);
+  const [bulkSortConfig, setBulkSortConfig] = useState<{ key: keyof BulkBacktestResult; desc: boolean }>({
+    key: "total_return",
+    desc: true,
+  });
+  const [bulkBenchmarkReturn, setBulkBenchmarkReturn] = useState<number | null>(null);
+  const [bulkParamOverrides, setBulkParamOverrides] = useState<Record<string, Record<string, any>>>({});
   
   // 선택된 전략 객체
   const selectedStrategy = useMemo(() => {
@@ -247,6 +461,121 @@ export default function BacktestPage() {
     setImportedYaml(content);
     setSelectedId(null);
   }, []);
+
+  // 전략 선택 토글 (일괄 테스트용)
+  const toggleStrategySelection = useCallback((id: string) => {
+    setSelectedBulkIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  }, []);
+
+  // 전체 선택/해제
+  const toggleAllStrategies = useCallback(() => {
+    if (selectedBulkIds.length === allStrategies.length) {
+      setSelectedBulkIds([]);
+    } else {
+      setSelectedBulkIds(allStrategies.map(s => s.id));
+    }
+  }, [selectedBulkIds, allStrategies]);
+
+  // 일괄 테스트 파라미터 개별 수정 핸들러
+  const handleBulkParamChange = useCallback((strategyId: string, key: string, value: number) => {
+    setBulkParamOverrides(prev => ({
+      ...prev,
+      [strategyId]: {
+        ...(prev[strategyId] || {}),
+        [key]: value
+      }
+    }));
+  }, []);
+
+  // 일괄 백테스트 실행
+  const handleBulkRun = useCallback(async () => {
+    if (selectedBulkIds.length === 0 || selectedStocks.length === 0) return;
+
+    setIsBulkTesting(true);
+    setBulkResults(null);
+    setBulkBenchmarkReturn(null);
+    setError(null);
+
+    // 프리셋 전략들만 필터링 (Template 전략은 일괄 테스트 대상에서 제외)
+    const validPresetIds = selectedBulkIds.filter(id => 
+      allStrategies.find(s => s.id === id && !s.id.endsWith('.kis.yaml'))
+    );
+
+    if (validPresetIds.length === 0) {
+      setError("일괄 테스트는 프리셋 전략들을 대상으로만 가능합니다.");
+      setIsBulkTesting(false);
+      return;
+    }
+
+    try {
+      const response = await runBulkBacktest({
+        strategy_ids: validPresetIds,
+        symbols: selectedStocks,
+        start_date: startDate,
+        end_date: endDate,
+        initial_capital: initialCapital,
+        timeframe: timeframe,
+        param_overrides: bulkParamOverrides,
+      });
+
+      if (response.success) {
+        setBulkResults(response.results);
+        if (response.benchmark_return !== undefined) {
+          setBulkBenchmarkReturn(response.benchmark_return);
+        }
+        // 결과 화면으로 스크롤 (순위표가 나타나므로)
+        setTimeout(() => {
+          document.getElementById('bulk-results-section')?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+      } else {
+        setError(response.message || "일괄 백테스트 실패");
+      }
+    } catch (e) {
+      setError("일괄 백테스트 중 오류가 발생했습니다");
+    } finally {
+      setIsBulkTesting(false);
+    }
+  }, [selectedBulkIds, selectedStocks, startDate, endDate, initialCapital, timeframe]);
+
+  const handleCopyForAI = useCallback(() => {
+    if (!bulkResults) return;
+
+    const summary = bulkResults
+      .filter(r => r.success)
+      .sort((a, b) => b.total_return - a.total_return)
+      .map((r, i) => {
+        const params = r.parameters 
+          ? Object.entries(r.parameters).map(([k, v]) => `${k}=${v}`).join(', ')
+          : 'N/A';
+        const returnSign = r.total_return > 0 ? '+' : '';
+        const winSign = r.win_rate > 0 ? '+' : '';
+        return `${i + 1}. ${r.strategy_name}\n   - 누적수익률: ${returnSign}${r.total_return.toFixed(2)}%\n   - Sharpe: ${r.sharpe_ratio.toFixed(2)}\n   - MDD: -${Math.abs(r.max_drawdown).toFixed(2)}%\n   - 승률: ${winSign}${r.win_rate.toFixed(2)}%\n   - 총 거래수: ${r.total_trades}회\n   - 파라미터: ${params}`;
+      })
+      .join('\n\n');
+
+    const text = `
+당신은 10년 이상의 경험을 가진 전문 퀀트 투자자이자 알고리즘 트레이딩 개발자입니다.
+
+아래 제공된 주식 자동매매 전략의 백테스트 결과를 심층적으로 분석하고, 수익성과 안정성을 높일 수 있도록 전략 파라미터를 조절해 주세요.
+
+### [백테스트 성과 분석 요청]
+- 기간: ${startDate} ~ ${endDate}
+- 종목: ${selectedStocks.join(', ')}
+- 기준 지수(KOSPI) 수익률: ${bulkBenchmarkReturn !== null ? bulkBenchmarkReturn.toFixed(2) + '%' : 'N/A'}
+
+#### 전략별 성과 순위 (수익률 순)
+${summary}
+
+---
+위 결과를 분석하여 어떤 전략의 파라미터 조합이 가장 효율적이었는지, 그리고 시장 지수 대비 초과 수익을 낸 핵심 요인이 무엇일지 설명해줘.
+    `.trim();
+
+    navigator.clipboard.writeText(text).then(() => {
+      alert("AI 분석용 텍스트가 클립보드에 복사되었습니다!");
+    });
+  }, [bulkResults, bulkBenchmarkReturn, startDate, endDate, selectedStocks]);
 
   // 백테스트 실행
   const handleRun = useCallback(async () => {
@@ -579,47 +908,65 @@ export default function BacktestPage() {
             </div>
           </div>
 
-          {/* 거래 비용 설정 */}
-          <div className="card">
+          {/* 일괄 백테스트 (토너먼트) */}
+          <div className="card border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/20">
             <h3 className="font-semibold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
-              <Percent className="w-4 h-4 text-kis-blue" />
-              거래 비용
+              <Zap className="w-4 h-4 text-amber-500" />
+              전략 토너먼트 (10가지 전략 일괄 테스트)
             </h3>
+            
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">수수료 (%)</label>
-                  <input
-                    type="number"
-                    step="0.001"
-                    value={commissionRate}
-                    onChange={(e) => setCommissionRate(Number(e.target.value))}
-                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">거래세 (%)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={taxRate}
-                    onChange={(e) => setTaxRate(Number(e.target.value))}
-                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
-                  />
-                </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-500">테스트 대상 전략 선택</span>
+                <button
+                  onClick={toggleAllStrategies}
+                  className="text-[10px] text-kis-blue hover:underline font-medium"
+                >
+                  {selectedBulkIds.length === allStrategies.length ? "전체 해제" : "전체 선택"}
+                </button>
               </div>
-              <div>
-                <label className="text-xs text-slate-500 mb-1 block">슬리피지 (%)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={slippage}
-                  onChange={(e) => setSlippage(Number(e.target.value))}
-                  className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
-                />
+
+              {/* 전략 체크박스 그리드 */}
+              <div className="grid grid-cols-1 gap-1.5 max-h-48 overflow-y-auto p-2 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+                {allStrategies.map((s) => (
+                  <label key={s.id} className="flex items-center gap-2 cursor-pointer group">
+                    <input
+                      type="checkbox"
+                      checked={selectedBulkIds.includes(s.id)}
+                      onChange={() => toggleStrategySelection(s.id)}
+                      className="w-3.5 h-3.5 rounded border-slate-300 text-kis-blue focus:ring-kis-blue"
+                    />
+                    <span className="text-xs text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
+                      {s.name}
+                    </span>
+                  </label>
+                ))}
               </div>
-              <p className="text-xs text-slate-400">
-                * 수수료: 매수/매도 시 부과, 거래세: 매도 시 부과
+
+              <button
+                onClick={handleBulkRun}
+                disabled={selectedBulkIds.length === 0 || selectedStocks.length === 0 || isBulkTesting}
+                className={cn(
+                  "w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all",
+                  selectedBulkIds.length > 0 && !isBulkTesting
+                    ? "bg-amber-500 hover:bg-amber-600 text-white shadow-sm"
+                    : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                )}
+              >
+                {isBulkTesting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    토너먼트 진행 중...
+                  </>
+                ) : (
+                  <>
+                    <TrendingUp className="w-4 h-4" />
+                    10가지 전략 동시 테스트 및 분석
+                  </>
+                )}
+              </button>
+              <p className="text-[10px] text-center text-slate-400">
+                * 선택된 {selectedBulkIds.length}개 전략을 순차적으로 테스트합니다.
               </p>
             </div>
           </div>
@@ -829,7 +1176,7 @@ export default function BacktestPage() {
                         </thead>
                         <tbody>
                           {result.trades.map((trade, i) => (
-                            <tr key={i} className="border-b border-slate-100 dark:border-slate-800 last:border-0">
+                            <tr key={i} className="border-b border-slate-100 dark:border-slate-800 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                               <td className="py-1.5 pr-4 text-slate-500 dark:text-slate-400 text-xs">
                                 {trade.time ? new Date(trade.time).toLocaleDateString("ko-KR") : "-"}
                               </td>
@@ -848,13 +1195,57 @@ export default function BacktestPage() {
                 </div>
               )}
             </>
-          ) : (
-            <div className="card flex flex-col items-center justify-center py-16 text-slate-400">
-              <BarChart3 className="w-16 h-16 mb-4 opacity-30" />
-              <p className="text-lg font-medium">결과 없음</p>
-              <p className="text-sm mt-1">백테스트를 실행하면 결과가 표시됩니다</p>
+          ) : isBulkTesting ? (
+            <div className="card flex flex-col items-center justify-center py-24 text-kis-blue">
+              <div className="relative mb-6">
+                <Loader2 className="w-16 h-16 animate-spin opacity-20" />
+                <Zap className="w-8 h-8 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse" />
+              </div>
+              <p className="text-xl font-bold mb-2">전략 토너먼트 진행 중</p>
+              <p className="text-sm text-slate-500 text-center max-w-xs">
+                선택된 전략들을 순차적으로 테스트하고 성과를 분석하고 있습니다. 잠시만 기다려 주세요...
+              </p>
+              <div className="mt-8 flex gap-2">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="w-2 h-2 rounded-full bg-kis-blue/30 animate-bounce" style={{ animationDelay: `${i * 0.2}s` }} />
+                ))}
+              </div>
             </div>
-          )}
+          ) : bulkResults ? (
+            <>
+              <BulkResultsTable
+                results={bulkResults}
+                sortConfig={bulkSortConfig}
+                onSort={(key) => setBulkSortConfig(prev => ({ key, desc: prev.key === key ? !prev.desc : true }))}
+                benchmarkReturn={bulkBenchmarkReturn}
+              />
+            <div className="mt-6 flex justify-center">
+              <button
+                onClick={handleCopyForAI}
+                className="btn btn-kis-blue py-3 px-8 flex items-center gap-2 shadow-lg hover:translate-y-[-2px] transition-all"
+              >
+                <MessageSquare className="w-5 h-5" />
+                <span>AI에게 성과 분석 요청하기 (복사)</span>
+                <ClipboardCopy className="w-4 h-4 ml-2 opacity-50" />
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="card flex flex-col items-center justify-center py-16 text-slate-400">
+            <BarChart3 className="w-16 h-16 mb-4 opacity-30" />
+            <p className="text-lg font-medium">결과 없음</p>
+            <p className="text-sm mt-1">백테스트를 실행하면 결과가 표시됩니다</p>
+          </div>
+        )}
+
+        {/* 파라미터 조정표 - 전략이 선택되면 결과 유무와 상관없이 항상 표시 */}
+        <BulkParamsTable 
+          selectedIds={selectedBulkIds}
+          results={bulkResults} 
+          overrides={bulkParamOverrides}
+          onChange={handleBulkParamChange}
+          allStrategies={allStrategies}
+        />
         </div>
       </div>
     </div>

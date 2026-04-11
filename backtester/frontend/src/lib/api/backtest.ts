@@ -7,6 +7,8 @@ import type {
   BacktestRequest,
   CustomBacktestRequest,
   BacktestResponse,
+  BulkBacktestRequest,
+  BulkBacktestResponse,
 } from "@/types";
 
 /**
@@ -14,6 +16,13 @@ import type {
  */
 export async function runBacktest(request: BacktestRequest): Promise<BacktestResponse> {
   return apiPost("/api/backtest/run", request);
+}
+
+/**
+ * 일괄 백테스트 실행 (전략 토너먼트)
+ */
+export async function runBulkBacktest(request: BulkBacktestRequest): Promise<BulkBacktestResponse> {
+  return apiPost("/api/backtest/bulk", request);
 }
 
 /**
