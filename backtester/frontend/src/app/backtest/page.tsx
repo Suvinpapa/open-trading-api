@@ -358,6 +358,7 @@ export default function BacktestPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [importedYaml, setImportedYaml] = useState<string | null>(null);
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
+  const [selectedStockNames, setSelectedStockNames] = useState<Record<string, string>>({});
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 6);
@@ -417,27 +418,41 @@ export default function BacktestPage() {
   const [error, setError] = useState<string | null>(null);
   const [tradesOpen, setTradesOpen] = useState(false);
 
-  // 로딩 단계 업데이트 (시뮬레이션)
+  // 로딩 단계별 메시지 (timeframe에 따라 동적으로 구성)
+  const loadingMessages = useMemo(() => {
+    const baseMessages = [
+      "과거 주가 데이터 및 벤치마크 확인 중...",
+      "QuantConnect Lean 백테스팅 엔진 구동 중...",
+      "선택된 전략 시뮬레이션 수행 중...",
+      "과거 매매 내역 정리 및 성과 지표 산출 중...",
+    ];
+
+    if (timeframe === "minute") {
+      return [
+        "분봉 데이터는 일봉 대비 10배 이상의 데이터가 필요하여 수집에 시간이 소요됩니다...",
+        "한국투자증권 API 제한에 맞추어 안정적으로 데이터를 수집 중입니다 (최초 1~2분)...",
+        ...baseMessages,
+        "수집된 대용량 분봉 데이터를 분석 중입니다. 잠시만 기다려 주세요...",
+      ];
+    }
+
+    return [
+      "필요시 대용량 데이터 다운로드 진행 (최초 실행 시 1~2분 소요)...",
+      ...baseMessages,
+    ];
+  }, [timeframe]);
+
+  // 로딩 단계 업데이트 (시뮬레이션 - 순환형 메시지로 변경)
   useEffect(() => {
     if (!isRunning) {
       setLoadingStep(0);
       return;
     }
     const interval = setInterval(() => {
-      setLoadingStep((prev) => (prev < 5 ? prev + 1 : prev));
-    }, 2500);
+      setLoadingStep((prev) => (prev + 1) % loadingMessages.length);
+    }, 3500); // 3.5초마다 메시지 순환
     return () => clearInterval(interval);
-  }, [isRunning]);
-
-  // 로딩 단계별 메시지
-  const loadingMessages = [
-    "데이터 확인 중...",
-    "KOSPI 벤치마크 다운로드 중...",
-    "종목 데이터 준비 중...",
-    "Lean 엔진 실행 중...",
-    "백테스트 진행 중...",
-    "결과 분석 중...",
-  ];
+  }, [isRunning, loadingMessages.length]);
 
   // 데이터 로드 (strategies API가 14개 전체 포함)
   useEffect(() => {
@@ -654,12 +669,22 @@ ${summary}
     const benchmarkEntries = result.benchmark_curve || {};
 
     let peak = -Infinity;
+    let prevPrices: Record<string, number> = {}; // 직전 거래일 가격 캐리 (주말/공휴일 대응)
+    let prevBenchmarkPct: number | null = null; // 직전 KOSPI 수익률 캐리
 
     return entries.map(([date, value]) => {
       // 분 단위 타임스탬프(YYYY-MM-DD HH:MM:SS)에서 날짜 부분만 추출하여 벤치마크 조회
       const dateOnly = date.split(' ')[0];
-      const benchmarkPct = benchmarkEntries[date] ?? benchmarkEntries[dateOnly];
+      let benchmarkPct = benchmarkEntries[date] ?? benchmarkEntries[dateOnly] ?? null;
       
+      // 주말/공휴일: 직전 거래일의 KOSPI 수익률 사용
+      if (benchmarkPct == null && prevBenchmarkPct != null) {
+        benchmarkPct = prevBenchmarkPct;
+      }
+      if (benchmarkPct != null) {
+        prevBenchmarkPct = benchmarkPct;
+      }
+
       const benchmarkValue = benchmarkPct != null
         ? initialCapital * (1 + benchmarkPct / 100)
         : null;
@@ -668,6 +693,24 @@ ${summary}
       peak = Math.max(peak, value);
       const drawdown = peak > 0 ? ((value - peak) / peak) * 100 : 0;
 
+      // 종목별 주가 매핑 (price_curves -> { symbol: price })
+      const pointPrices: Record<string, number> = {};
+      if (result.price_curves) {
+        Object.entries(result.price_curves).forEach(([symbol, curve]) => {
+          const price = (curve as Record<string, number>)[date] ?? (curve as Record<string, number>)[dateOnly];
+          if (price !== undefined) {
+            pointPrices[symbol] = price;
+          } else if (prevPrices[symbol] !== undefined) {
+            // 주말/공휴일 등 데이터 없을 때 직전 가격 사용
+            pointPrices[symbol] = prevPrices[symbol];
+          }
+        });
+      }
+      // 현재 가격을 기억 (다음 포인트의 폴백용)
+      if (Object.keys(pointPrices).length > 0) {
+        prevPrices = { ...pointPrices };
+      }
+
       return {
         date,
         value,
@@ -675,9 +718,12 @@ ${summary}
         benchmarkPct: benchmarkPct ?? null,
         benchmark: benchmarkValue,
         drawdown,
+        prices: pointPrices,
       };
     });
+
   }, [result, initialCapital]);
+
 
   // 거래 내역 (Buy/Sell 마커용)
   const tradeMarkers: TradeMarker[] = useMemo(() => {
@@ -706,26 +752,25 @@ ${summary}
               </div>
 
               {/* 현재 단계 */}
-              <p className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
+              <p className="text-[15px] font-semibold text-slate-900 dark:text-white mb-2 text-center break-keep leading-snug min-h-[40px] flex items-center justify-center">
                 {loadingMessages[loadingStep]}
               </p>
 
-              {/* 진행률 바 */}
-              <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 mb-4">
-                <div
-                  className="bg-kis-blue h-2 rounded-full transition-all duration-500"
-                  style={{ width: `${((loadingStep + 1) / loadingMessages.length) * 100}%` }}
-                ></div>
+              {/* 진행 상태 시각 효과 (Indeterminate Progress) */}
+              <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden mb-4 relative">
+                <div className="absolute top-0 bottom-0 bg-kis-blue rounded-full w-1/2 animate-[progress_1.5s_ease-in-out_infinite]"></div>
+                <style>{`
+                  @keyframes progress {
+                    0% { left: -50%; }
+                    50% { left: 25%; width: 50%; }
+                    100% { left: 100%; }
+                  }
+                `}</style>
               </div>
 
-              {/* 단계 표시 */}
-              <p className="text-xs text-slate-500">
-                {loadingStep + 1} / {loadingMessages.length}
-              </p>
-
               {/* 안내 메시지 */}
-              <p className="text-xs text-slate-400 mt-4 text-center">
-                처음 실행 시 데이터 다운로드로 시간이 걸릴 수 있습니다
+              <p className="text-xs text-kis-blue animate-pulse mb-1 font-medium text-center">
+                분석 데이터 양에 따라 시간이 다소 걸릴 수 있습니다
               </p>
             </div>
           </div>
@@ -834,7 +879,11 @@ ${summary}
               <Target className="w-4 h-4 text-kis-blue" />
               종목 선택
             </h3>
-            <StockInput stocks={selectedStocks} onChange={setSelectedStocks} />
+            <StockInput 
+              stocks={selectedStocks} 
+              onChange={setSelectedStocks} 
+              onNamesChange={setSelectedStockNames}
+            />
           </div>
 
           {/* 기간 설정 */}
@@ -1089,6 +1138,7 @@ ${summary}
                   tradeMarkers={tradeMarkers}
                   initialCapital={initialCapital}
                   yAxisDomain={yAxisDomain}
+                  symbolNames={result.symbol_names || selectedStockNames}
                 />
               )}
 
@@ -1180,7 +1230,9 @@ ${summary}
                               <td className="py-1.5 pr-4 text-slate-500 dark:text-slate-400 text-xs">
                                 {trade.time ? new Date(trade.time).toLocaleDateString("ko-KR") : "-"}
                               </td>
-                              <td className="py-1.5 pr-4 font-mono">{trade.symbol}</td>
+                              <td className="py-1.5 pr-4 font-mono font-medium">
+                                {(result.symbol_names && result.symbol_names[trade.symbol]) || selectedStockNames[trade.symbol] || trade.symbol}
+                              </td>
                               <td className={cn("py-1.5 pr-4 font-medium", trade.direction === "Buy" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400")}>
                                 {trade.direction === "Buy" ? "매수" : "매도"}
                               </td>

@@ -110,6 +110,7 @@ def _lean_run_to_api_response(
     start_date: str,
     end_date: str,
     initial_capital: float,
+    resolution: str = "daily",
     workspace: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """LeanRun을 프론트엔드 API 응답 형식으로 변환"""
@@ -129,14 +130,10 @@ def _lean_run_to_api_response(
     equity_curve = {}
     charts = result.get("charts", {})
     
-    # 1순위: 분 단위 정밀 차트 (MinuteValue), 2순위: 기본 차트 (Strategy Equity)
-    target_chart_name = "MinuteValue" if "MinuteValue" in charts else "Strategy Equity"
-    target_chart = charts.get(target_chart_name, {})
+    # Lean 기본 차트 (Strategy Equity) 사용
+    target_chart = charts.get("Strategy Equity", {})
     series = target_chart.get("series", {})
-    
-    # 시리즈명은 MinuteValue의 경우 'Value', Strategy Equity의 경우 'Equity'
-    series_name = "Value" if target_chart_name == "MinuteValue" else "Equity"
-    equity_series = series.get(series_name, {})
+    equity_series = series.get("Equity", {})
     values = equity_series.get("values", [])
     
     # 데이터 포인트가 너무 많으면 프론트엔드 렉 방지를 위해 샘플링 (최대 2000개)
@@ -150,12 +147,23 @@ def _lean_run_to_api_response(
             
         if isinstance(point, list) and len(point) >= 2:
             try:
+                # fromtimestamp는 시스템 로컬 타임존(KST) 기준으로 변환
                 dt = datetime.fromtimestamp(point[0])
                 val = point[4] if len(point) > 4 else point[1]
-                # 분 데이터일 경우 초 단위를 00으로 고정 (프론트엔드 매칭용)
-                equity_curve[dt.strftime("%Y-%m-%d %H:%M:00")] = float(val)
+                
+                if resolution == "daily":
+                    # 일봉: 날짜만 표시 (시간 정보 제거)
+                    equity_curve[dt.strftime("%Y-%m-%d")] = float(val)
+                else:
+                    # 분봉: KOSPI 일봉 데이터로 인해 OnData가 호출되며 발생한 00:00:00 포인트 제거
+                    if dt.hour == 0 and dt.minute == 0:
+                        continue
+                    # 분봉: 시분까지 표시
+                    equity_curve[dt.strftime("%Y-%m-%d %H:%M:00")] = float(val)
             except:
                 pass
+
+
 
     # 거래 내역
     orders = result.get("orders", {})
@@ -169,18 +177,22 @@ def _lean_run_to_api_response(
         symbol_code = symbol_data.get("value", "") if isinstance(symbol_data, dict) else str(symbol_data)
         direction = order.get("direction", 0)
         
-        # 거래 시간 포맷 통일 (자산 곡선과 일치시키기 위해 %H:%M:%S 포함)
+        # 거래 시간 포맷 (KST 기준)
         order_time_str = order.get("time", "")
         try:
-            # ISO 8601 (2024-02-01T09:01:00Z) 파싱
             if "T" in order_time_str:
                 trade_dt = datetime.fromisoformat(order_time_str.replace("Z", "+00:00"))
-                # 초 단위를 00으로 고정하여 데이터 포인트와 일치시킴
-                formatted_time = trade_dt.strftime("%Y-%m-%d %H:%M:00")
+                # 시스템 로컬 타임존(KST)으로 변환
+                trade_dt_local = trade_dt.astimezone().replace(tzinfo=None)
+                if resolution == "daily":
+                    formatted_time = trade_dt_local.strftime("%Y-%m-%d")
+                else:
+                    formatted_time = trade_dt_local.strftime("%Y-%m-%d %H:%M:00")
             else:
                 formatted_time = order_time_str
         except Exception:
             formatted_time = order_time_str
+
 
         trades.append({
             "symbol": symbol_code.upper(),
@@ -189,6 +201,53 @@ def _lean_run_to_api_response(
             "price": order.get("price", 0),
             "time": formatted_time,
         })
+
+
+    # 종목별 주가 곡선 추출 (데이터 폴더에서 읽기)
+    # 핵심: 날짜(YYYY-MM-DD) 키로 종가를 항상 저장하여 프론트엔드의 dateOnly 폴백이 100% 작동하게 함
+    price_curves = {}
+    if workspace and equity_curve:
+        data_dir = workspace / "data" / "equity" / "krx" / resolution
+        if data_dir.exists():
+            # equity_curve에 포함된 날짜들만 필터링 (YYYYMMDD 형식)
+            target_dates = set(k[:10].replace("-", "") for k in equity_curve.keys())
+            
+            for symbol in symbols:
+                symbol_upper = symbol.upper()
+                price_curves[symbol_upper] = {}
+                csv_file = data_dir / f"{symbol.lower()}.csv"
+                if not csv_file.exists():
+                    continue
+                
+                try:
+                    with open(csv_file, "r") as f:
+                        for line in f:
+                            # 날짜 프리픽스 체크 (빠른 스킵)
+                            if line[:8] not in target_dates:
+                                continue
+                                
+                            parts = line.strip().split(",")
+                            if len(parts) < 5: continue
+                            
+                            row_date_raw = parts[0]
+                            close_price = float(parts[4])
+                            
+                            # 항상 날짜 키(YYYY-MM-DD)로 저장 (마지막 값이 종가가 됨)
+                            date_key = f"{row_date_raw[:4]}-{row_date_raw[4:6]}-{row_date_raw[6:8]}"
+                            price_curves[symbol_upper][date_key] = close_price
+                except Exception as e:
+                    logger.warning(f"[Price_Curve] {symbol} 데이터 파싱 실패: {e}")
+
+
+    # 종목 정보 (명칭) 추가
+    from backend.routes.symbols import get_symbol_by_code
+    symbol_names = {}
+    for symbol in symbols:
+        info = get_symbol_by_code(symbol)
+        if info:
+            symbol_names[symbol] = info["name"]
+        else:
+            symbol_names[symbol] = symbol
 
     return {
         "run_id": lean_run.project.run_id,
@@ -241,6 +300,8 @@ def _lean_run_to_api_response(
             },
         },
         "equity_curve": equity_curve,
+        "price_curves": price_curves,
+        "symbol_names": symbol_names,
         "benchmark_curve": _load_benchmark_curve(workspace, start_date, end_date) if workspace else None,
         "trades_count": len(trades),
         "trades": trades,
@@ -336,13 +397,19 @@ async def prepare_market_data(
         """CSV 파일이 요청 날짜 범위를 커버하는지 확인"""
         try:
             with open(csv_path, 'r', encoding="utf-8") as f:
-                lines = f.readlines()
-                if len(lines) < 2:
+                first_line = f.readline().strip()
+                if not first_line:
                     return False
+                
+                # 마지막 줄을 효율적으로 읽기 (전체 파일 로드 없이)
+                last_line = first_line
+                for line in f:
+                    if line.strip():
+                        last_line = line.strip()
 
-                # 첫번째/마지막 줄에서 날짜 추출 (YYYYMMDD 형식)
-                first_date_str = lines[0].split(',')[0].strip()
-                last_date_str = lines[-1].split(',')[0].strip()
+                # 날짜 추출 — 앞 8자리만 사용 (YYYYMMDD or "YYYYMMDD HH:MM:SS" 모두 대응)
+                first_date_str = first_line.split(',')[0].strip()[:8]
+                last_date_str = last_line.split(',')[0].strip()[:8]
 
                 first_date = datetime.strptime(first_date_str, "%Y%m%d").date()
                 last_date = datetime.strptime(last_date_str, "%Y%m%d").date()
@@ -361,6 +428,7 @@ async def prepare_market_data(
                 return True
         except Exception:
             return False
+
     
     # 이미 있는 파일 확인
     for symbol in symbols:
@@ -647,6 +715,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             result_data = _lean_run_to_api_response(
                 lean_run, definition.name, request.symbols,
                 start_date, end_date, request.initial_capital,
+                resolution=request.timeframe,
                 workspace=workspace,
             )
             return BacktestResponse(

@@ -34,6 +34,7 @@ export interface ChartDataPoint {
   benchmarkPct: number | null;
   benchmark: number | null;
   drawdown: number;
+  prices?: Record<string, number>;
 }
 
 export interface TradeMarker {
@@ -54,6 +55,7 @@ interface EquityChartProps {
   tradeMarkers: TradeMarker[];
   initialCapital: number;
   yAxisDomain: [number, number];
+  symbolNames?: Record<string, string>; // { "005930": "삼성전자" }
 }
 
 /** Format axis values in Korean units (억/만) */
@@ -72,10 +74,12 @@ function EquityTooltipInner({
   active,
   payload,
   tradeMarkers,
+  symbolNames = {},
 }: {
   active?: boolean;
   payload?: readonly any[];
   tradeMarkers: TradeMarker[];
+  symbolNames?: Record<string, string>;
 }) {
   if (!active || !payload?.length) return null;
 
@@ -124,6 +128,25 @@ function EquityTooltipInner({
           <span className="text-xs font-semibold text-slate-900 dark:text-white ml-auto tabular-nums">
             {formatCurrency(data.benchmark)}
           </span>
+        </div>
+      )}
+
+      {/* Symbol Prices */}
+      {data.prices && Object.entries(data.prices).length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-700 space-y-1">
+          {Object.entries(data.prices).map(([symbol, price]) => {
+            const displayName = symbolNames[symbol] || symbol;
+            return (
+              <div key={symbol} className="flex justify-between items-center gap-4">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
+                  {displayName}
+                </span>
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 tabular-nums">
+                  {formatCurrency(price)}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -273,6 +296,7 @@ export function EquityChart({
   tradeMarkers,
   initialCapital,
   yAxisDomain,
+  symbolNames = {},
 }: EquityChartProps) {
   const hasBenchmark = useMemo(
     () => chartData.some((d) => d.benchmark !== null),
@@ -281,17 +305,36 @@ export function EquityChart({
   const hasTrades = tradeMarkers.length > 0;
 
   // Group markers by (date, type) → count per group, split buy/sell on same date
+  // 분봉 테스트에서 수천 건이 나올 수 있으므로 최대 200개로 샘플링
   const groupedMarkers: GroupedMarker[] = useMemo(() => {
     const map = new Map<string, number>();
     for (const m of tradeMarkers) {
       const key = `${m.date}|${m.type}`;
       map.set(key, (map.get(key) || 0) + 1);
     }
-    return Array.from(map.entries()).map(([key, count]) => {
+    const all = Array.from(map.entries()).map(([key, count]) => {
       const [date, type] = key.split("|");
       return { date, type: type as "buy" | "sell", count };
     });
+    // 마커가 200개 초과 시 균등 샘플링 (시작/끝 포함)
+    if (all.length > 200) {
+      const step = Math.ceil(all.length / 200);
+      return all.filter((_, i) => i % step === 0 || i === all.length - 1);
+    }
+    return all;
   }, [tradeMarkers]);
+
+  // 차트 데이터를 날짜 기반 Map으로 사전 인덱싱 (O(1) 조회용)
+  const chartDateMap = useMemo(() => {
+    const m = new Map<string, ChartDataPoint>();
+    for (const d of chartData) {
+      m.set(d.date, d);
+      // 날짜만으로도 조회 가능 (일봉 대응)
+      const dateOnly = d.date.split(" ")[0];
+      if (!m.has(dateOnly)) m.set(dateOnly, d);
+    }
+    return m;
+  }, [chartData]);
 
   const xInterval = useMemo(
     () => Math.max(0, Math.floor(chartData.length / 8) - 1),
@@ -308,7 +351,11 @@ export function EquityChart({
   // Stable tooltip component that captures tradeMarkers via closure
   const EquityTooltip = useMemo(() => {
     const Comp = (props: any) => (
-      <EquityTooltipInner {...props} tradeMarkers={tradeMarkers} />
+      <EquityTooltipInner 
+        {...props} 
+        tradeMarkers={tradeMarkers} 
+        symbolNames={symbolNames} 
+      />
     );
     Comp.displayName = "EquityTooltip";
     return Comp;
@@ -403,54 +450,15 @@ export function EquityChart({
               fill="url(#gradStrategy)"
               name="전략"
             />
-            {/* Buy/Sell markers (grouped by date+type) */}
+            {/* Buy/Sell markers — Map 기반 O(1) 조회로 최적화 */}
             {groupedMarkers.map((marker, idx) => {
-              // 타임존 영향을 피하고 다양한 구분자(점, 하이픈 등)에 대응하는 철벽 파싱 헬퍼
-              const parseToTimestamp = (dateStr: string) => {
-                const parts = dateStr.match(/\d+/g);
-                if (!parts || parts.length < 3) return 0;
-                
-                const y = parseInt(parts[0]);
-                const m = parseInt(parts[1]) - 1;
-                const d = parseInt(parts[2]);
-                const hh = parts[3] ? parseInt(parts[3]) : 0;
-                const mm = parts[4] ? parseInt(parts[4]) : 0;
-                const ss = parts[5] ? parseInt(parts[5]) : 0;
-                
-                // 로컬 날짜 객체 생성 (일봉/분봉 모두 동일한 로컬 타임라인 적용)
-                return new Date(y, m, d, hh, mm, ss).getTime();
-              };
-
-              // 1. 우선 문자열 일치로 시도
-              let point = chartData.find((d) => d.date === marker.date);
-              
-              // 2. 일치가 없다면(샘플링/포맷 차이 등) 밀리초 단위로 가장 가까운 포인트 검색
+              // Map에서 즉시 조회 (기존 find + for loop 대체)
+              let point = chartDateMap.get(marker.date);
               if (!point) {
-                const markerTime = parseToTimestamp(marker.date);
-                if (markerTime === 0) return null;
-
-                let minDiff = Infinity;
-                let nearestPoint = null;
-                
-                for (const d of chartData) {
-                  const pointTime = parseToTimestamp(d.date);
-                  const diff = Math.abs(pointTime - markerTime);
-                  
-                  if (diff < minDiff) {
-                    minDiff = diff;
-                    nearestPoint = d;
-                  }
-                  
-                  // 데이터가 정렬되어 있으므로 오차가 다시 커지기 시작하면 중단
-                  if (pointTime > markerTime && diff > minDiff) break;
-                }
-                
-                // 하루(86400000ms) 이내의 오차 범위에 포인트가 있다면 해당 지점에 마커 표시
-                if (minDiff <= 86400000) {
-                  point = nearestPoint as ChartDataPoint;
-                }
+                // 날짜 부분만 추출하여 재시도
+                const dateOnly = marker.date.split(" ")[0];
+                point = chartDateMap.get(dateOnly);
               }
-
               if (!point) return null;
 
               // Check if both buy and sell exist on the same date
@@ -468,9 +476,9 @@ export function EquityChart({
               return (
                 <ReferenceDot
                   key={`${marker.date}-${marker.type}-${idx}`}
-                  x={point.date} // 원래 거래 시점(marker.date) 대신 차트상에 실존하는 지점(point.date)을 사용
+                  x={point.date}
                   y={point.value + yOffset}
-                  r={Math.max(r, 6)} // 가독성을 위해 최소 반지름을 6으로 상향
+                  r={Math.max(r, 6)}
                   fill={
                     marker.type === "buy"
                       ? CHART_COLORS.buy

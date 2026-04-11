@@ -94,9 +94,11 @@ export interface BacktestResult {
   net_profit_percent: number;
   metrics: PerformanceMetrics;
   equity_curve: Record<string, number>;
+  price_curves?: Record<string, Record<string, number>>; // 종목별 주가 커브 (Symbol -> Date -> Price)
   benchmark_curve?: Record<string, number>;  // KOSPI 수익률 커브 (%)
   trades_count: number;
   trades?: TradeInfo[];  // 거래 내역
+  symbol_names?: Record<string, string>; // 종목 코드 -> 종목명 매핑
 }
 
 export interface BacktestResponse {

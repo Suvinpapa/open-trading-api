@@ -421,6 +421,9 @@ from datetime import datetime, timedelta{candlestick_imports}'''
 class KRXEquity(PythonData):
     """한국 주식 커스텀 데이터"""
 
+    def DataTimeZone(self):
+        return TimeZones.Seoul
+
     def GetSource(self, config, date, isLive):
         symbol = config.Symbol.Value.lower()
         source = f"/Data/equity/krx/{path_segment}/{{symbol}}.csv"
@@ -435,7 +438,9 @@ class KRXEquity(PythonData):
 
         try:
             cols = line.split(",")
-            data.Time = datetime.strptime(cols[0], "{time_format}")
+            # TimeZones.Utc로 등록하므로, KST 시간에 대해 9시간을 빼서 UTC 기준으로 역보정
+            parsed_time = datetime.strptime(cols[0], "{time_format}")
+            data.Time = parsed_time - timedelta(hours=9)
             data.Value = float(cols[4])
             data["Open"] = float(cols[1])
             data["High"] = float(cols[2])
@@ -451,6 +456,9 @@ class KRXEquity(PythonData):
 class KRXIndex(PythonData):
     """한국 지수 커스텀 데이터 (KOSPI 벤치마크용)"""
 
+    def DataTimeZone(self):
+        return TimeZones.Seoul
+
     def GetSource(self, config, date, isLive):
         symbol = config.Symbol.Value.lower()
         source = f"/Data/index/krx/daily/{{symbol}}.csv"
@@ -465,7 +473,8 @@ class KRXIndex(PythonData):
 
         try:
             cols = line.split(",")
-            data.Time = datetime.strptime(cols[0], "%Y%m%d")
+            parsed_time = datetime.strptime(cols[0], "%Y%m%d")
+            data.Time = parsed_time - timedelta(hours=9)
             data.Value = float(cols[4])  # 종가
             data["Open"] = float(cols[1])
             data["High"] = float(cols[2])
@@ -627,7 +636,7 @@ class CustomFeeModel(FeeModel):
         # KOSPI 벤치마크 설정 (Alpha/Beta 계산용)
         self.kospi_symbol = None
         try:
-            kospi = self.AddData(KRXIndex, "kospi", Resolution.Daily).Symbol
+            kospi = self.AddData(KRXIndex, "kospi", Resolution.Daily, timeZone=TimeZones.Utc).Symbol
             self.SetBenchmark(kospi)
             self.kospi_symbol = kospi
         except Exception:
@@ -642,6 +651,7 @@ class Algorithm(QCAlgorithm):
     """
 
     def Initialize(self):
+        self.SetTimeZone("Asia/Seoul")
         self.SetStartDate({start_parts[0]}, {start_parts[1].lstrip("0")}, {start_parts[2].lstrip("0")})
         self.SetEndDate({end_parts[0]}, {end_parts[1].lstrip("0")}, {end_parts[2].lstrip("0")})
         self.SetCash({int(capital)}){benchmark_setup}
@@ -655,7 +665,7 @@ class Algorithm(QCAlgorithm):
 {risk_init}
 
         for symbol_str in "{symbols_str}".split(","):
-            symbol = self.AddData({data_class}, symbol_str, Resolution.{resolution}).Symbol
+            symbol = self.AddData({data_class}, symbol_str, Resolution.{resolution}, timeZone=TimeZones.Utc).Symbol
             self.symbols.append(symbol)
             self.indicators[symbol] = {{}}
 {candlestick_dict_init}
@@ -688,9 +698,6 @@ class Algorithm(QCAlgorithm):
 {indicator_update_code}
 {candlestick_update}
 
-            # 현재 자산 가치 기록 (분 단위 정밀 그래프용)
-            self.Plot("MinuteValue", "Value", self.Portfolio.TotalPortfolioValue)
-            
             # 지표 준비 확인
             if not all(getattr(ind, 'IsReady', True) for ind in self.indicators[symbol].values()){candlestick_ready_check}:
                 continue

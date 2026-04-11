@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import shutil
 from .project_manager import LeanProject
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,21 @@ class LeanRun:
 
 class LeanExecutor:
     """Lean Docker 실행기 (Lean CLI 불필요)"""
+
+    @classmethod
+    def _get_docker_cmd(cls) -> str:
+        """Docker 실행 파일 경로 찾기"""
+        cmd = shutil.which("docker")
+        if cmd:
+            return cmd
+        
+        # macOS 표준 경로 확인
+        mac_standard = "/usr/local/bin/docker"
+        if Path(mac_standard).exists():
+            return mac_standard
+            
+        # 기본값 (실패하더라도 FileNotFoundError를 발생시키기 위해)
+        return "docker"
     
     @classmethod
     def run(
@@ -200,8 +216,9 @@ class LeanExecutor:
         config_path.write_text(json.dumps(lean_config, indent=2))
         
         # Docker 명령어 구성
+        docker_bin = cls._get_docker_cmd()
         cmd = [
-            "docker", "run", "--rm",
+            docker_bin, "run", "--rm",
             "-v", f"{project_path.as_posix()}:/Algorithm:ro",
             "-v", f"{data_path.as_posix()}:/Data:ro",
             "-v", f"{results_path.as_posix()}:/Results",
@@ -265,8 +282,9 @@ class LeanExecutor:
         """Lean Docker 이미지 다운로드"""
         try:
             logger.info(f"[Lean] Docker 이미지 다운로드 중: {LEAN_IMAGE}")
+            docker_bin = cls._get_docker_cmd()
             result = subprocess.run(
-                ["docker", "pull", LEAN_IMAGE],
+                [docker_bin, "pull", LEAN_IMAGE],
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -280,8 +298,9 @@ class LeanExecutor:
     def check_docker(cls) -> bool:
         """Docker 실행 확인"""
         try:
+            docker_bin = cls._get_docker_cmd()
             result = subprocess.run(
-                ["docker", "info"],
+                [docker_bin, "info"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -296,8 +315,9 @@ class LeanExecutor:
     def check_image(cls) -> bool:
         """Lean 이미지 존재 확인"""
         try:
+            docker_bin = cls._get_docker_cmd()
             result = subprocess.run(
-                ["docker", "images", "-q", LEAN_IMAGE],
+                [docker_bin, "images", "-q", LEAN_IMAGE],
                 capture_output=True,
                 text=True,
                 timeout=10,

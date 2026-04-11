@@ -15,12 +15,13 @@ interface StockWithName {
 interface StockInputProps {
   stocks: string[];
   onChange: (stocks: string[]) => void;
+  onNamesChange?: (names: Record<string, string>) => void;
 }
 
 // 빠른 선택용 코드 목록 (이름은 마스터파일에서 조회)
 const POPULAR_CODES = ["005930", "000660", "035720", "005380", "051910", "035420"];
 
-export function StockInput({ stocks, onChange }: StockInputProps) {
+export function StockInput({ stocks, onChange, onNamesChange }: StockInputProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Symbol[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -139,7 +140,12 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     } else {
       localStorage.removeItem(STORAGE_KEY);
     }
-  }, [stocks, stockNames]);
+    
+    // 부모 컴포넌트에 이름 맵 전달
+    if (onNamesChange) {
+      onNamesChange(stockNames);
+    }
+  }, [stocks, stockNames, onNamesChange]);
 
   // Debounced search
   const doSearch = useCallback(async (searchQuery: string) => {
