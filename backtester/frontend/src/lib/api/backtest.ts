@@ -52,3 +52,16 @@ export async function runCustomBacktest(
   };
   return apiPost("/api/backtest/run-custom", request);
 }
+
+/**
+ * 백테스트 결과 AI 분석 실행
+ */
+export async function analyzeBacktest(request: {
+  results: any[];
+  benchmark_return: number | null;
+  start_date: string;
+  end_date: string;
+  symbols: string[];
+}): Promise<{ success: boolean; analysis: string }> {
+  return apiPost("/api/backtest/analyze", request);
+}

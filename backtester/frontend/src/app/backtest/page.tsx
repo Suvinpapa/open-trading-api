@@ -18,12 +18,22 @@ import {
   ChevronDown,
   ClipboardCopy,
   MessageSquare,
+  Sparkles,
+  BrainCircuit,
+  Eye,
+  RotateCcw,
 } from "lucide-react";
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
-import { listStrategies, runBacktest, runCustomBacktest, runBulkBacktest } from "@/lib/api";
+import {
+  listStrategies,
+  runBacktest,
+  runCustomBacktest,
+  runBulkBacktest,
+  analyzeBacktest
+} from "@/lib/api";
 import { FileDropZone } from "@/components/file";
 import { StockInput } from "@/components/symbols";
-import { EquityChart } from "@/components/backtest";
+import { EquityChart, BulkEquityChart } from "@/components/backtest";
 import type { ChartDataPoint, TradeMarker } from "@/components/backtest";
 import type { Strategy, BacktestResult, ParamDefinition, BulkBacktestResult } from "@/types";
 
@@ -70,20 +80,39 @@ function ParamSlider({
   definition,
   value,
   onChange,
+  isModified = false,
 }: {
   name: string;
   definition: ParamDefinition;
   value: number;
   onChange: (value: number) => void;
+  isModified?: boolean;
 }) {
   const step = definition.step ?? (definition.type === "int" ? 1 : 0.1);
   const label = definition.label || name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-  
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-slate-600 dark:text-slate-400">{label}</span>
-        <span className="text-sm font-mono font-medium tabular-nums">{value}</span>
+        <span className="text-sm text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
+          {label}
+          {isModified && (
+            <span className="w-1.5 h-1.5 rounded-full bg-kis-blue animate-pulse flex-shrink-0" title="기본값에서 수정됨" />
+          )}
+        </span>
+        <span
+          className={cn(
+            "text-sm font-mono font-medium tabular-nums transition-colors",
+            isModified ? "text-kis-blue font-bold" : "text-slate-700 dark:text-slate-300"
+          )}
+        >
+          {value}
+          {isModified && (
+            <span className="ml-1 text-[10px] font-normal text-slate-400">
+              (기본: {definition.default})
+            </span>
+          )}
+        </span>
       </div>
       <input
         type="range"
@@ -92,11 +121,40 @@ function ParamSlider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-primary"
+        className={cn(
+          "w-full h-1.5 rounded-lg appearance-none cursor-pointer relative z-10",
+          isModified
+            ? "bg-kis-blue/20 dark:bg-kis-blue/30 accent-kis-blue"
+            : "bg-slate-200 dark:bg-slate-700/50 accent-kis-blue"
+        )}
       />
-      <div className="flex justify-between text-xs text-slate-400">
-        <span>{definition.min}</span>
-        <span>{definition.max}</span>
+
+      {/* Visual Range Indicator */}
+      <div className="relative h-1 w-full bg-slate-100 dark:bg-slate-800/50 rounded-full -mt-2.5 overflow-hidden">
+        <div
+          className={cn(
+            "absolute h-full rounded-full transition-all duration-300",
+            isModified ? "bg-kis-blue/40" : "bg-kis-blue/20"
+          )}
+          style={{
+            left: '0%',
+            width: `${((value - definition.min) / (definition.max - definition.min)) * 100}%`
+          }}
+        />
+        {isModified && (
+          <div
+            className="absolute h-full w-0.5 bg-slate-400/50"
+            style={{
+              left: `${((definition.default - definition.min) / (definition.max - definition.min)) * 100}%`
+            }}
+            title={`기본값: ${definition.default}`}
+          />
+        )}
+      </div>
+
+      <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+        <span>MIN: {definition.min}</span>
+        <span>MAX: {definition.max}</span>
       </div>
     </div>
   );
@@ -153,22 +211,26 @@ function BulkResultsTable({
   sortConfig,
   onSort,
   benchmarkReturn,
+  selectedCompareIds,
+  onCompareToggle,
 }: {
   results: BulkBacktestResult[];
   sortConfig: { key: keyof BulkBacktestResult; desc: boolean };
   onSort: (key: keyof BulkBacktestResult) => void;
   benchmarkReturn: number | null;
+  selectedCompareIds: string[];
+  onCompareToggle: (id: string) => void;
 }) {
   const sortedResults = [...results].sort((a, b) => {
     const aVal = a[sortConfig.key];
     const bVal = b[sortConfig.key];
-    
+
     if (typeof aVal === 'number' && typeof bVal === 'number') {
       return sortConfig.desc ? bVal - aVal : aVal - bVal;
     }
     if (typeof aVal === 'string' && typeof bVal === 'string') {
-      return sortConfig.desc 
-        ? bVal.localeCompare(aVal, 'ko') 
+      return sortConfig.desc
+        ? bVal.localeCompare(aVal, 'ko')
         : aVal.localeCompare(bVal, 'ko');
     }
     return 0;
@@ -205,7 +267,8 @@ function BulkResultsTable({
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
-              <th className="pb-3 pr-4 font-semibold text-center w-12">순위</th>
+              <th className="pb-3 pr-4 font-semibold text-center w-10">비교</th>
+              <th className="pb-3 pr-4 font-semibold text-center w-10">순위</th>
               {headers.map((h) => (
                 <th
                   key={h.key}
@@ -226,7 +289,19 @@ function BulkResultsTable({
           </thead>
           <tbody>
             {sortedResults.map((res, i) => (
-              <tr key={res.strategy_id} className="border-b border-slate-100 dark:border-slate-800 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+              <tr key={res.strategy_id} className={cn(
+                "border-b border-slate-100 dark:border-slate-800 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors",
+                selectedCompareIds.includes(res.strategy_id) && "bg-kis-blue/5 dark:bg-kis-blue/10"
+              )}>
+                <td className="py-3 pr-4 text-center">
+                  <input
+                    type="checkbox"
+                    checked={selectedCompareIds.includes(res.strategy_id)}
+                    onChange={() => onCompareToggle(res.strategy_id)}
+                    disabled={!res.success || (!selectedCompareIds.includes(res.strategy_id) && selectedCompareIds.length >= 8)}
+                    className="w-4 h-4 rounded border-slate-300 text-kis-blue focus:ring-kis-blue cursor-pointer disabled:opacity-30"
+                  />
+                </td>
                 <td className="py-3 pr-4 text-center font-bold text-slate-400">
                   {i === 0 ? <span className="text-amber-500">🥇</span> : i === 1 ? <span className="text-slate-400">🥈</span> : i === 2 ? <span className="text-amber-700">🥉</span> : i + 1}
                 </td>
@@ -257,17 +332,21 @@ function BulkResultsTable({
 }
 
 // 일괄 테스트 파라미터 표 컴포넌트
-function BulkParamsTable({ 
+function BulkParamsTable({
   selectedIds,
-  results, 
-  overrides, 
+  results,
+  overrides,
   onChange,
+  onReset,
+  onResetAll,
   allStrategies
-}: { 
+}: {
   selectedIds: string[],
-  results: BulkBacktestResult[] | null, 
+  results: BulkBacktestResult[] | null,
   overrides: Record<string, Record<string, any>>,
   onChange: (strategyId: string, key: string, value: number) => void,
+  onReset: (strategyId: string) => void,
+  onResetAll: () => void,
   allStrategies: any[]
 }) {
   if (!selectedIds || selectedIds.length === 0) return null;
@@ -283,7 +362,16 @@ function BulkParamsTable({
           <Target className="w-4 h-4" />
           전략별 파라미터 직접 조정
         </h3>
-        <span className="text-[10px] text-slate-400">수정 후 상단의 테스트 실행 버튼을 다시 누르세요</span>
+        <div className="flex items-center gap-4">
+          <span className="text-[10px] text-slate-400">수정 후 좌측의 동시 테스트 실행 버튼을 다시 누르세요</span>
+          <button
+            onClick={onResetAll}
+            className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold text-slate-500 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded hover:bg-slate-50 transition-colors"
+          >
+            <RotateCcw className="w-3 h-3" />
+            전체 초기화
+          </button>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -297,15 +385,24 @@ function BulkParamsTable({
             {displayIds.map((id) => {
               const strategyMeta = allStrategies.find(s => s.id === id);
               if (!strategyMeta) return null;
-              
+
               const res = results?.find(r => r.strategy_id === id);
               const paramsMeta = strategyMeta.params || {};
 
               return (
                 <tr key={id} className="border-b border-slate-100 dark:border-slate-800/50 last:border-0 hover:bg-white/50 dark:hover:bg-white/5 transition-colors">
                   <td className="py-4 pr-4 font-medium text-slate-700 dark:text-slate-200 align-top">
-                    <div className="flex flex-col">
-                      <span>{strategyMeta.name}</span>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <span>{strategyMeta.name}</span>
+                        <button
+                          onClick={() => onReset(id)}
+                          className="p-1 text-slate-400 hover:text-kis-blue hover:bg-kis-blue/5 rounded transition-colors"
+                          title="이 전략만 초기화"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                        </button>
+                      </div>
                       {res && !res.success && (
                         <span className="text-[10px] text-loss">실패: {res.error}</span>
                       )}
@@ -316,19 +413,27 @@ function BulkParamsTable({
                       {Object.keys(paramsMeta).map((key) => {
                         const paramMeta = paramsMeta[key];
                         const val = overrides[id]?.[key] ?? res?.parameters?.[key] ?? paramMeta.default;
-                        
+
                         return (
                           <div key={key} className="flex flex-col gap-1.5 py-1">
-                            <label className="text-[10px] text-slate-500 font-medium">
+                            <label className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
                               {paramMeta?.label || key}
+                              {overrides[id]?.[key] !== undefined && (
+                                <span className="w-1 h-1 rounded-full bg-kis-blue animate-pulse" title="수정됨" />
+                              )}
                             </label>
                             <input
                               type="number"
-                              value={val}
+                              value={overrides[id]?.[key] ?? paramMeta.default}
                               min={paramMeta?.min}
                               max={paramMeta?.max}
                               onChange={(e) => onChange(id, key, Number(e.target.value))}
-                              className="w-24 px-2 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-xs font-mono focus:border-kis-blue focus:ring-1 focus:ring-kis-blue outline-none transition-all"
+                              className={cn(
+                                "w-24 px-2 py-1.5 bg-white dark:bg-slate-800 border rounded text-xs font-mono outline-none transition-all",
+                                overrides[id]?.[key] !== undefined 
+                                  ? "border-kis-blue ring-1 ring-kis-blue/30 text-kis-blue font-bold" 
+                                  : "border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300"
+                              )}
                             />
                             <span className="text-[9px] text-slate-400 font-mono text-center">
                               {paramMeta.min}~{paramMeta.max}
@@ -367,15 +472,15 @@ export default function BacktestPage() {
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [initialCapital, setInitialCapital] = useState(100_000_000);
   const [timeframe, setTimeframe] = useState("daily"); // 해상도: daily 또는 minute
-  
+
   // 거래 비용 설정
   const [commissionRate, setCommissionRate] = useState(0.015); // 0.015%
   const [taxRate, setTaxRate] = useState(0.2); // 0.2%
   const [slippage, setSlippage] = useState(0.1); // 0.1%
-  
+
   // 파라미터 오버라이드 (전략 파라미터 조정용)
   const [paramOverrides, setParamOverrides] = useState<Record<string, number>>({});
-  
+
   // 일괄 테스트 (토너먼트) 설정
   const [selectedBulkIds, setSelectedBulkIds] = useState<string[]>([]);
   const [isBulkTesting, setIsBulkTesting] = useState(false);
@@ -386,15 +491,110 @@ export default function BacktestPage() {
   });
   const [bulkBenchmarkReturn, setBulkBenchmarkReturn] = useState<number | null>(null);
   const [bulkParamOverrides, setBulkParamOverrides] = useState<Record<string, Record<string, any>>>({});
-  
+
+  // 차트 비교 관련
+  const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  const [isAiAnalysisCollapsed, setIsAiAnalysisCollapsed] = useState(false);
+  const [bulkBenchmarkCurve, setBulkBenchmarkCurve] = useState<Record<string, number> | undefined>(undefined);
+  const [bulkErrorMessage, setBulkErrorMessage] = useState<string | undefined>(undefined);
+  const [isMounted, setIsMounted] = useState(false);
+
+  // 로컬 스토리지 키 관리
+  const STORAGE_KEYS = {
+    PARAM_OVERRIDES: 'kis_backtest_param_overrides',
+    BULK_PARAM_OVERRIDES: 'kis_backtest_bulk_param_overrides',
+    SELECTED_STOCKS: 'kis_backtest_selected_stocks',
+    DATES: 'kis_backtest_dates',
+    CAPITAL: 'kis_backtest_capital',
+    TIMEFRAME: 'kis_backtest_timeframe',
+    SELECTED_BULK_IDS: 'kis_backtest_selected_bulk_ids',
+  };
+
+  // 1. 마운트 시 저장된 데이터 로드 (Hydration Mismatch 방지)
+  useEffect(() => {
+    setIsMounted(true);
+    
+    try {
+      const savedParamOverrides = localStorage.getItem(STORAGE_KEYS.PARAM_OVERRIDES);
+      if (savedParamOverrides) setParamOverrides(JSON.parse(savedParamOverrides));
+
+      const savedBulkParamOverrides = localStorage.getItem(STORAGE_KEYS.BULK_PARAM_OVERRIDES);
+      if (savedBulkParamOverrides) setBulkParamOverrides(JSON.parse(savedBulkParamOverrides));
+
+      const savedStocks = localStorage.getItem(STORAGE_KEYS.SELECTED_STOCKS);
+      if (savedStocks) setSelectedStocks(JSON.parse(savedStocks));
+
+      const savedDates = localStorage.getItem(STORAGE_KEYS.DATES);
+      if (savedDates) {
+        const { start, end } = JSON.parse(savedDates);
+        setStartDate(start);
+        setEndDate(end);
+      }
+
+      const savedCapital = localStorage.getItem(STORAGE_KEYS.CAPITAL);
+      if (savedCapital) setInitialCapital(Number(savedCapital));
+
+      const savedTimeframe = localStorage.getItem(STORAGE_KEYS.TIMEFRAME);
+      if (savedTimeframe) setTimeframe(savedTimeframe);
+
+      const savedBulkIds = localStorage.getItem(STORAGE_KEYS.SELECTED_BULK_IDS);
+      if (savedBulkIds) setSelectedBulkIds(JSON.parse(savedBulkIds));
+    } catch (e) {
+      console.warn("Failed to load saved settings from localStorage", e);
+    }
+  }, []);
+
+  // 2. 데이터 변경 시 자동 저장
+  useEffect(() => {
+    if (!isMounted) return;
+    localStorage.setItem(STORAGE_KEYS.PARAM_OVERRIDES, JSON.stringify(paramOverrides));
+  }, [paramOverrides, isMounted]);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    localStorage.setItem(STORAGE_KEYS.BULK_PARAM_OVERRIDES, JSON.stringify(bulkParamOverrides));
+  }, [bulkParamOverrides, isMounted]);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    localStorage.setItem(STORAGE_KEYS.SELECTED_STOCKS, JSON.stringify(selectedStocks));
+  }, [selectedStocks, isMounted]);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    localStorage.setItem(STORAGE_KEYS.DATES, JSON.stringify({ start: startDate, end: endDate }));
+  }, [startDate, endDate, isMounted]);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    localStorage.setItem(STORAGE_KEYS.CAPITAL, initialCapital.toString());
+  }, [initialCapital, isMounted]);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    localStorage.setItem(STORAGE_KEYS.TIMEFRAME, timeframe);
+  }, [timeframe, isMounted]);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    localStorage.setItem(STORAGE_KEYS.SELECTED_BULK_IDS, JSON.stringify(selectedBulkIds));
+  }, [selectedBulkIds, isMounted]);
+
+
   // 선택된 전략 객체
   const selectedStrategy = useMemo(() => {
     if (!selectedId) return null;
     return allStrategies.find(s => s.id === selectedId) || null;
   }, [selectedId, allStrategies]);
-  
+
   // 전략 선택 시 기본 파라미터로 초기화
   useEffect(() => {
+    if (!isMounted) return;
+    // 이미 로드된 오버라이드가 있으면 스킵 (초기 마운트 시)
+    if (Object.keys(paramOverrides).length > 0) return;
+
     if (selectedStrategy?.params) {
       const defaults: Record<string, number> = {};
       Object.entries(selectedStrategy.params).forEach(([key, def]) => {
@@ -404,13 +604,14 @@ export default function BacktestPage() {
     } else {
       setParamOverrides({});
     }
-  }, [selectedStrategy]);
-  
+  }, [selectedStrategy, isMounted]);
+
+
   // 파라미터 변경 핸들러
   const handleParamChange = useCallback((name: string, value: number) => {
     setParamOverrides(prev => ({ ...prev, [name]: value }));
   }, []);
-  
+
   // 결과
   const [isRunning, setIsRunning] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
@@ -479,7 +680,7 @@ export default function BacktestPage() {
 
   // 전략 선택 토글 (일괄 테스트용)
   const toggleStrategySelection = useCallback((id: string) => {
-    setSelectedBulkIds(prev => 
+    setSelectedBulkIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
   }, []);
@@ -511,10 +712,12 @@ export default function BacktestPage() {
     setIsBulkTesting(true);
     setBulkResults(null);
     setBulkBenchmarkReturn(null);
+    setBulkBenchmarkCurve(undefined);
+    setBulkErrorMessage(undefined);
     setError(null);
 
     // 프리셋 전략들만 필터링 (Template 전략은 일괄 테스트 대상에서 제외)
-    const validPresetIds = selectedBulkIds.filter(id => 
+    const validPresetIds = selectedBulkIds.filter(id =>
       allStrategies.find(s => s.id === id && !s.id.endsWith('.kis.yaml'))
     );
 
@@ -535,11 +738,39 @@ export default function BacktestPage() {
         param_overrides: bulkParamOverrides,
       });
 
-      if (response.success) {
-        setBulkResults(response.results);
-        if (response.benchmark_return !== undefined) {
-          setBulkBenchmarkReturn(response.benchmark_return);
+      if (response.success && response.data) {
+        console.log("[BulkTest_Response_Data]", response.data);
+        const results = response.data.results;
+        if (results) {
+          setBulkResults(results);
         }
+        
+        const bReturn = response.data.benchmark_return ?? response.data.benchmarkReturn;
+        if (bReturn !== undefined && bReturn !== null) {
+          setBulkBenchmarkReturn(bReturn);
+        }
+        
+        // 벤치마크(KOSPI) 곡선 설정 - 대소문자 변환 완벽 대응
+        const bCurve = response.data.benchmark_curve || response.data.benchmarkCurve;
+        
+        if (bCurve) {
+          setBulkBenchmarkCurve(bCurve);
+          console.info("[BulkTest] Benchmark data loaded:", Object.keys(bCurve).length, "pts");
+        } else {
+          // 데이터가 없을 경우 메시지 기록 (진단용)
+          const errMsg = response.message || "BENCHMARK_KEY_MISSING_IN_DATA_DICT";
+          setBulkErrorMessage(errMsg);
+          console.warn("[BulkTest] Benchmark data missing in data dict keys:", Object.keys(response.data));
+        }
+        
+        // 상위 3개 전략 자동 선택
+        const top3 = response.data.results
+          .filter(r => r.success)
+          .sort((a, b) => b.total_return - a.total_return)
+          .slice(0, 3)
+          .map(r => r.strategy_id);
+        setSelectedCompareIds(top3);
+
         // 결과 화면으로 스크롤 (순위표가 나타나므로)
         setTimeout(() => {
           document.getElementById('bulk-results-section')?.scrollIntoView({ behavior: 'smooth' });
@@ -552,45 +783,45 @@ export default function BacktestPage() {
     } finally {
       setIsBulkTesting(false);
     }
-  }, [selectedBulkIds, selectedStocks, startDate, endDate, initialCapital, timeframe]);
+  }, [selectedBulkIds, selectedStocks, startDate, endDate, initialCapital, timeframe, bulkParamOverrides]);
 
-  const handleCopyForAI = useCallback(() => {
+  const handleAnalyzeWithGemini = useCallback(async () => {
     if (!bulkResults) return;
 
-    const summary = bulkResults
-      .filter(r => r.success)
-      .sort((a, b) => b.total_return - a.total_return)
-      .map((r, i) => {
-        const params = r.parameters 
-          ? Object.entries(r.parameters).map(([k, v]) => `${k}=${v}`).join(', ')
-          : 'N/A';
-        const returnSign = r.total_return > 0 ? '+' : '';
-        const winSign = r.win_rate > 0 ? '+' : '';
-        return `${i + 1}. ${r.strategy_name}\n   - 누적수익률: ${returnSign}${r.total_return.toFixed(2)}%\n   - Sharpe: ${r.sharpe_ratio.toFixed(2)}\n   - MDD: -${Math.abs(r.max_drawdown).toFixed(2)}%\n   - 승률: ${winSign}${r.win_rate.toFixed(2)}%\n   - 총 거래수: ${r.total_trades}회\n   - 파라미터: ${params}`;
-      })
-      .join('\n\n');
+    setIsAnalyzing(true);
+    setAiAnalysis(null);
 
-    const text = `
-당신은 10년 이상의 경험을 가진 전문 퀀트 투자자이자 알고리즘 트레이딩 개발자입니다.
+    try {
+      const response = await analyzeBacktest({
+        results: bulkResults,
+        benchmark_return: bulkBenchmarkReturn,
+        start_date: startDate,
+        end_date: endDate,
+        symbols: selectedStocks
+      });
 
-아래 제공된 주식 자동매매 전략의 백테스트 결과를 심층적으로 분석하고, 수익성과 안정성을 높일 수 있도록 전략 파라미터를 조절해 주세요.
-
-### [백테스트 성과 분석 요청]
-- 기간: ${startDate} ~ ${endDate}
-- 종목: ${selectedStocks.join(', ')}
-- 기준 지수(KOSPI) 수익률: ${bulkBenchmarkReturn !== null ? bulkBenchmarkReturn.toFixed(2) + '%' : 'N/A'}
-
-#### 전략별 성과 순위 (수익률 순)
-${summary}
-
----
-위 결과를 분석하여 어떤 전략의 파라미터 조합이 가장 효율적이었는지, 그리고 시장 지수 대비 초과 수익을 낸 핵심 요인이 무엇일지 설명해줘.
-    `.trim();
-
-    navigator.clipboard.writeText(text).then(() => {
-      alert("AI 분석용 텍스트가 클립보드에 복사되었습니다!");
-    });
+      if (response.success) {
+        setAiAnalysis(response.analysis);
+        setIsAiAnalysisCollapsed(false);
+        // 분석 결과 위치로 스크롤
+        setTimeout(() => {
+          document.getElementById('ai-analysis-output')?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+      } else {
+        alert("AI 분석에 실패했습니다.");
+      }
+    } catch (e) {
+      alert("AI 분석 도중 오류가 발생했습니다.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   }, [bulkResults, bulkBenchmarkReturn, startDate, endDate, selectedStocks]);
+
+  const toggleCompareSelection = useCallback((id: string) => {
+    setSelectedCompareIds(prev =>
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  }, []);
 
   // 백테스트 실행
   const handleRun = useCallback(async () => {
@@ -676,7 +907,7 @@ ${summary}
       // 분 단위 타임스탬프(YYYY-MM-DD HH:MM:SS)에서 날짜 부분만 추출하여 벤치마크 조회
       const dateOnly = date.split(' ')[0];
       let benchmarkPct = benchmarkEntries[date] ?? benchmarkEntries[dateOnly] ?? null;
-      
+
       // 주말/공휴일: 직전 거래일의 KOSPI 수익률 사용
       if (benchmarkPct == null && prevBenchmarkPct != null) {
         benchmarkPct = prevBenchmarkPct;
@@ -843,7 +1074,7 @@ ${summary}
                 Import된 파일 사용 중
               </div>
             )}
-            
+
             {/* 전략 설명 */}
             {selectedStrategy && (
               <p className="mt-2 text-xs text-slate-500">
@@ -853,25 +1084,48 @@ ${summary}
           </div>
 
           {/* 파라미터 설정 (전략 선택 시만 표시) */}
-          {selectedStrategy?.params && Object.keys(selectedStrategy.params).length > 0 && (
-            <div className="card">
-              <h3 className="font-semibold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
-                <Activity className="w-4 h-4 text-kis-blue" />
-                파라미터 설정
-              </h3>
-              <div className="space-y-4">
-                {Object.entries(selectedStrategy.params).map(([name, def]) => (
-                  <ParamSlider
-                    key={name}
-                    name={name}
-                    definition={def}
-                    value={paramOverrides[name] ?? def.default}
-                    onChange={(value) => handleParamChange(name, value)}
-                  />
-                ))}
+          {selectedStrategy?.params && Object.keys(selectedStrategy.params).length > 0 && (() => {
+            const isAnyModified = Object.entries(selectedStrategy.params).some(
+              ([name, def]) => paramOverrides[name] !== undefined && paramOverrides[name] !== def.default
+            );
+            return (
+              <div className="card">
+                <h3 className="font-semibold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-kis-blue" />
+                  파라미터 설정
+                  {isAnyModified && (
+                    <button
+                      onClick={() => {
+                        if (!selectedStrategy.params) return;
+                        const defaults: Record<string, number> = {};
+                        Object.entries(selectedStrategy.params).forEach(([key, def]) => {
+                          defaults[key] = def.default;
+                        });
+                        setParamOverrides(defaults);
+                      }}
+                      className="ml-auto flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-kis-blue bg-slate-100 dark:bg-slate-800 hover:bg-kis-blue/10 border border-slate-200 dark:border-slate-700 rounded-md transition-colors"
+                      title="모든 파라미터를 KIS 기본값으로 되돌리기"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      초기값 되돌리기
+                    </button>
+                  )}
+                </h3>
+                <div className="space-y-4">
+                  {Object.entries(selectedStrategy.params).map(([name, def]) => (
+                    <ParamSlider
+                      key={name}
+                      name={name}
+                      definition={def}
+                      value={paramOverrides[name] ?? def.default}
+                      onChange={(value) => handleParamChange(name, value)}
+                      isModified={paramOverrides[name] !== undefined && paramOverrides[name] !== def.default}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* 종목 선택 */}
           <div className="card">
@@ -879,9 +1133,9 @@ ${summary}
               <Target className="w-4 h-4 text-kis-blue" />
               종목 선택
             </h3>
-            <StockInput 
-              stocks={selectedStocks} 
-              onChange={setSelectedStocks} 
+            <StockInput
+              stocks={selectedStocks}
+              onChange={setSelectedStocks}
               onNamesChange={setSelectedStockNames}
             />
           </div>
@@ -905,8 +1159,8 @@ ${summary}
                     onClick={() => setTimeframe("daily")}
                     className={cn(
                       "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
-                      timeframe === "daily" 
-                        ? "bg-white dark:bg-slate-800 text-kis-blue shadow-sm" 
+                      timeframe === "daily"
+                        ? "bg-white dark:bg-slate-800 text-kis-blue shadow-sm"
                         : "text-slate-500 hover:text-slate-700"
                     )}
                   >
@@ -916,8 +1170,8 @@ ${summary}
                     onClick={() => setTimeframe("minute")}
                     className={cn(
                       "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
-                      timeframe === "minute" 
-                        ? "bg-white dark:bg-slate-800 text-kis-blue shadow-sm" 
+                      timeframe === "minute"
+                        ? "bg-white dark:bg-slate-800 text-kis-blue shadow-sm"
                         : "text-slate-500 hover:text-slate-700"
                     )}
                   >
@@ -963,7 +1217,7 @@ ${summary}
               <Zap className="w-4 h-4 text-amber-500" />
               전략 토너먼트 (10가지 전략 일괄 테스트)
             </h3>
-            
+
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-slate-500">테스트 대상 전략 선택</span>
@@ -1264,40 +1518,145 @@ ${summary}
               </div>
             </div>
           ) : bulkResults ? (
-            <>
+            <div className="space-y-6">
+              {/* 상단 성과 요약 및 분석 실행 영역 */}
+              <div className="card bg-kis-blue/5 border-kis-blue/20">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800">
+                      <Zap className="w-6 h-6 text-kis-blue" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-900 dark:text-white">성과 토너먼트 완료</h3>
+                      <p className="text-xs text-slate-500">가장 우수한 성과를 보인 전략들을 한눈에 비교하고 AI 분석을 받아보세요.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 w-full md:w-auto">
+                    <button
+                      onClick={handleAnalyzeWithGemini}
+                      disabled={isAnalyzing}
+                      className="flex-1 md:flex-none flex items-center justify-center gap-2 px-6 py-3 bg-kis-blue hover:bg-kis-blue-dark text-white rounded-xl font-bold transition-all shadow-md active:scale-95 disabled:opacity-50"
+                    >
+                      {isAnalyzing ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <BrainCircuit className="w-4 h-4" />
+                      )}
+                      Gemini 3.1 Pro 심층 분석
+                    </button>
+                    <button
+                      onClick={() => {
+                        const summary = bulkResults
+                          .filter(r => r.success)
+                          .sort((a, b) => b.total_return - a.total_return)
+                          .map((r, i) => `${i + 1}. ${r.strategy_name}: ${r.total_return.toFixed(2)}% (Sharpe: ${r.sharpe_ratio.toFixed(2)}, MDD: ${r.max_drawdown.toFixed(2)}%)`)
+                          .join('\n');
+                        navigator.clipboard.writeText(summary);
+                        alert("성과 요약이 클립보드에 복사되었습니다. 외부 보고서나 AI 질문 시 활용하세요!");
+                      }}
+                      className="p-3 bg-white dark:bg-slate-900 text-slate-500 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 transition-all flex items-center gap-2 group"
+                      title="성과 요약 텍스트 복사"
+                    >
+                      <ClipboardCopy className="w-5 h-5 group-hover:text-kis-blue transition-colors" />
+                      <span className="text-xs font-medium hidden lg:inline">요약 복사</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* AI 분석 결과 구역 */}
+              {aiAnalysis && (
+                <div id="ai-analysis-output" className="animate-in fade-in slide-in-from-top-4 duration-500">
+                  <div className={cn(
+                    "card border-kis-blue/50 shadow-xl shadow-kis-blue/5 ring-1 ring-kis-blue/10 transition-all duration-300",
+                    isAiAnalysisCollapsed && "pb-0 opacity-80"
+                  )}>
+                    <div className={cn(
+                      "flex items-center justify-between border-slate-100 dark:border-slate-800 transition-all",
+                      !isAiAnalysisCollapsed ? "mb-6 border-b pb-4" : "mb-0 border-b-0 pb-0"
+                    )}>
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 bg-kis-blue/10 rounded-lg">
+                          <Sparkles className="w-5 h-5 text-kis-blue" />
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-slate-900 dark:text-white">Gemini 3.1 Pro 전략 리포트</h3>
+                          <p className="text-[10px] text-kis-blue font-black uppercase tracking-widest">AI Quantum Insight</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isAiAnalysisCollapsed && (
+                          <span className="text-[10px] text-slate-400 font-medium">내용을 보려면 우측 아이콘 클릭</span>
+                        )}
+                        <button
+                          onClick={() => setIsAiAnalysisCollapsed(!isAiAnalysisCollapsed)}
+                          className="text-slate-400 hover:text-kis-blue p-2 hover:bg-kis-blue/5 rounded-full transition-all"
+                          title={isAiAnalysisCollapsed ? "펼치기" : "접기"}
+                        >
+                          <ChevronDown className={cn("w-5 h-5 transition-transform duration-300", !isAiAnalysisCollapsed && "rotate-180")} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {!isAiAnalysisCollapsed && (
+                      <div className="prose prose-slate dark:prose-invert max-w-none animate-in fade-in zoom-in-95 duration-300">
+                        <div className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 font-sans whitespace-pre-wrap">
+                          {aiAnalysis}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 멀티 차트 비교 */}
+              <BulkEquityChart
+                results={bulkResults}
+                selectedIds={selectedCompareIds}
+                initialCapital={initialCapital}
+                benchmarkCurve={bulkBenchmarkCurve}
+                errorMessage={bulkErrorMessage}
+              />
+
+              {/* 순위표 */}
               <BulkResultsTable
                 results={bulkResults}
                 sortConfig={bulkSortConfig}
                 onSort={(key) => setBulkSortConfig(prev => ({ key, desc: prev.key === key ? !prev.desc : true }))}
                 benchmarkReturn={bulkBenchmarkReturn}
+                selectedCompareIds={selectedCompareIds}
+                onCompareToggle={toggleCompareSelection}
               />
-            <div className="mt-6 flex justify-center">
-              <button
-                onClick={handleCopyForAI}
-                className="btn btn-kis-blue py-3 px-8 flex items-center gap-2 shadow-lg hover:translate-y-[-2px] transition-all"
-              >
-                <MessageSquare className="w-5 h-5" />
-                <span>AI에게 성과 분석 요청하기 (복사)</span>
-                <ClipboardCopy className="w-4 h-4 ml-2 opacity-50" />
-              </button>
             </div>
-          </>
-        ) : (
-          <div className="card flex flex-col items-center justify-center py-16 text-slate-400">
-            <BarChart3 className="w-16 h-16 mb-4 opacity-30" />
-            <p className="text-lg font-medium">결과 없음</p>
-            <p className="text-sm mt-1">백테스트를 실행하면 결과가 표시됩니다</p>
-          </div>
-        )}
+          ) : (
+            <div className="card flex flex-col items-center justify-center py-16 text-slate-400">
+              <BarChart3 className="w-16 h-16 mb-4 opacity-30" />
+              <p className="text-lg font-medium">결과 없음</p>
+              <p className="text-sm mt-1">백테스트를 실행하면 결과가 표시됩니다</p>
+            </div>
+          )}
 
-        {/* 파라미터 조정표 - 전략이 선택되면 결과 유무와 상관없이 항상 표시 */}
-        <BulkParamsTable 
-          selectedIds={selectedBulkIds}
-          results={bulkResults} 
-          overrides={bulkParamOverrides}
-          onChange={handleBulkParamChange}
-          allStrategies={allStrategies}
-        />
+          {/* 파라미터 조정표 - 전략이 선택되면 결과 유무와 상관없이 항상 표시 */}
+          <BulkParamsTable
+            selectedIds={selectedBulkIds}
+            results={bulkResults}
+            overrides={bulkParamOverrides}
+            onChange={handleBulkParamChange}
+            onReset={(id) => {
+              setBulkParamOverrides(prev => {
+                const next = { ...prev };
+                delete next[id];
+                return next;
+              });
+            }}
+            onResetAll={() => {
+              setBulkParamOverrides({});
+              localStorage.removeItem(STORAGE_KEYS.BULK_PARAM_OVERRIDES);
+            }}
+            allStrategies={allStrategies}
+          />
+
         </div>
       </div>
     </div>

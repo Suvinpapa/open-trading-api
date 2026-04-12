@@ -33,3 +33,4 @@ my_token: ""
 
 # User-Agent; Chrome > F12 개발자 모드 > Console > navigator.userAgent > 자신의 userAgent 확인가능
 my_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+

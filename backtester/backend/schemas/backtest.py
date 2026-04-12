@@ -85,11 +85,11 @@ class BulkBacktestResult(BaseModel):
     success: bool
     error: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = Field(default=None, description="세부 파라미터 값")
+    equity_curve: Optional[Dict[str, float]] = Field(default=None, description="수익 곡선 데이터")
 
 
 class BulkBacktestResponse(BaseModel):
     """일괄 백테스트 응답"""
     success: bool = True
-    results: List[BulkBacktestResult]
-    benchmark_return: Optional[float] = Field(default=None, description="벤치마크(KOSPI) 수익률")
+    data: Optional[Dict[str, Any]] = None
     message: Optional[str] = None

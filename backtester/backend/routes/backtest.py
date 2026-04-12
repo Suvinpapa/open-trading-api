@@ -26,6 +26,8 @@ from kis_backtest.lean.project_manager import LeanProjectManager
 from kis_backtest.lean.data_converter import DataConverter
 from kis_backtest.lean.result_formatter import parse_lean_value
 import kis_backtest.strategies.preset  # 전략 자동 등록
+from google import genai
+from google.genai import types
 
 
 router = APIRouter(
@@ -36,71 +38,134 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 
+# 전역 변수: 최근 벤치마크 로드 실패 사유 (진단용)
+_last_benchmark_error = "NONE"
+
 def _load_benchmark_curve(
     workspace: Path,
     start_date: str,
     end_date: str,
 ) -> Optional[Dict[str, float]]:
-    """KOSPI 벤치마크 수익률 곡선 로드
+    """KOSPI 벤치마크 수익률 곡선 로드 (심층 경로 탐색)"""
+    # 1. 시스템 루트 및 관련 경로 집합 정의
+    current_file_path = Path(__file__).resolve()
+    backtester_dir = current_file_path.parent.parent.parent
+    project_root = backtester_dir.parent
 
-    Returns:
-        날짜별 수익률 % (시작일 대비). 예: {"2024-01-02": 0.0, "2024-01-03": 1.5, ...}
-    """
-    csv_path = workspace / "data" / "index" / "krx" / "daily" / "kospi.csv"
+    # 수색할 경로 목록 (우선순위 순)
+    possible_paths = [
+        backtester_dir / ".lean-workspace" / "data" / "index" / "krx" / "daily" / "kospi.csv",
+        backtester_dir / "data" / "index" / "krx" / "daily" / "kospi.csv",
+        project_root / "backtester" / ".lean-workspace" / "data" / "index" / "krx" / "daily" / "kospi.csv",
+        workspace / "data" / "index" / "krx" / "daily" / "kospi.csv",
+        Path("backtester/.lean-workspace/data/index/krx/daily/kospi.csv"),
+        Path(".lean-workspace/data/index/krx/daily/kospi.csv"),
+    ]
+    
+    csv_path = None
+    checked_paths = []
+    for p in possible_paths:
+        abs_p = p.resolve() if p.is_absolute() else p.absolute()
+        checked_paths.append(str(abs_p))
+        if p.exists():
+            csv_path = p
+            break
 
-    if not csv_path.exists():
+    if not csv_path:
+        error_info = f"KOSPI_FILE_NOT_FOUND (Checked {len(checked_paths)} locations)"
+        logging.getLogger(__name__).error(f"{error_info}: {checked_paths}")
+        # 전역 컨텍스트에 에러 정보 저장 (응답 메시지용)
+        global _last_benchmark_error
+        _last_benchmark_error = error_info
         return None
 
+    logger.info(f"[Benchmark] KOSPI 데이터 발견: {csv_path}")
+
     try:
-        # 날짜 범위
+        # CSV 파싱 (YYYYMMDD,open,high,low,close,volume)
         req_start = datetime.strptime(start_date, "%Y-%m-%d").date()
         req_end = datetime.strptime(end_date, "%Y-%m-%d").date()
 
-        # CSV 파싱 (YYYYMMDD,open,high,low,close,volume)
-        prices = {}
+        all_prices = {}
         with open(csv_path, "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split(",")
-                if len(parts) < 5:
-                    continue
+                if len(parts) < 5: continue
                 try:
                     dt = datetime.strptime(parts[0], "%Y%m%d").date()
-                    close = float(parts[4])
-                    if req_start <= dt <= req_end:
-                        prices[dt] = close
-                except (ValueError, IndexError):
-                    continue
+                    if dt <= req_end:
+                        all_prices[dt] = float(parts[4])
+                except (ValueError, IndexError): continue
 
-        if not prices:
+        if not all_prices:
+            logging.getLogger(__name__).warning("[Benchmark] CSV 파일에 유효한 데이터가 없습니다.")
             return None
 
-        # 시작일 기준 수익률 계산
-        sorted_dates = sorted(prices.keys())
-        base_price = prices[sorted_dates[0]]
-
-        if base_price <= 0:
-            return None
-
-        # 데이터가 종료일에 충분히 가깝지 않으면 None 반환
-        # (낡은 캐시로 인한 절반짜리 선 방지 — 없는 게 잘리는 것보다 낫다)
-        last_data_date = sorted_dates[-1]
-        if last_data_date < req_end - timedelta(days=14):
-            logging.getLogger(__name__).warning(
-                f"[Benchmark] 데이터 종료일 부족: 데이터={last_data_date}, 요청={req_end} "
-                f"→ 벤치마크 선 비활성화"
-            )
-            return None
+        # 시작 가격 결정: 백테스트 시작일(req_start) 이후 가장 빠른 거래일의 가격 사용
+        valid_dates = sorted([d for d in all_prices.keys() if d >= req_start])
+        if not valid_dates:
+            # 시작일 이후 데이터가 없으면 전체 데이터 중 마지막을 기준으로 시도 (폴백)
+            valid_dates = sorted([d for d in all_prices.keys()])
+            if not valid_dates: return None
+            
+        base_price = all_prices[valid_dates[0]]
+        if base_price <= 0: return None
 
         curve = {}
-        for dt in sorted_dates:
-            pct = ((prices[dt] - base_price) / base_price) * 100
+        # 실제 표시할 범위는 req_start부터 req_end까지
+        display_dates = sorted([d for d in all_prices.keys() if req_start <= d <= req_end])
+        for dt in display_dates:
+            pct = ((all_prices[dt] - base_price) / base_price) * 100
             curve[dt.strftime("%Y-%m-%d")] = round(pct, 2)
 
+        logging.getLogger(__name__).info(f"[Benchmark] {len(curve)}개의 포인트 로드 완료 (기준가: {base_price} @ {valid_dates[0]})")
         return curve
 
     except Exception as e:
-        logging.getLogger(__name__).warning(f"벤치마크 로드 실패: {e}")
+        logging.getLogger(__name__).warning(f"[Benchmark] 벤치마크 로드 실패: {e}")
         return None
+
+
+def _extract_equity_curve(
+    result: Dict[str, Any],
+    resolution: str = "daily",
+    max_points: int = 2000
+) -> Dict[str, float]:
+    """Lean 결과 JSON에서 자산 곡선 데이터를 추출 및 샘플링"""
+    equity_curve = {}
+    charts = result.get("charts", {})
+    
+    # Lean 기본 차트 (Strategy Equity) 사용
+    target_chart = charts.get("Strategy Equity", {})
+    series = target_chart.get("series", {})
+    equity_series = series.get("Equity", {})
+    values = equity_series.get("values", [])
+    
+    if not values:
+        return {}
+        
+    # 샘플링
+    total_points = len(values)
+    step = max(1, total_points // max_points)
+    
+    for i, point in enumerate(values):
+        if i % step != 0 and i != total_points - 1:
+            continue
+            
+        if isinstance(point, list) and len(point) >= 2:
+            try:
+                dt = datetime.fromtimestamp(point[0])
+                val = point[4] if len(point) > 4 else point[1]
+                
+                if resolution == "daily":
+                    equity_curve[dt.strftime("%Y-%m-%d")] = float(val)
+                else:
+                    if dt.hour == 0 and dt.minute == 0:
+                        continue
+                    equity_curve[dt.strftime("%Y-%m-%d %H:%M:00")] = float(val)
+            except:
+                pass
+    return equity_curve
 
 
 def _lean_run_to_api_response(
@@ -126,42 +191,8 @@ def _lean_run_to_api_response(
     end_equity = parse_lean_value(stats.get("End Equity", initial_capital))
     net_profit = end_equity - start_equity
 
-    # 자산 곡선 (date -> value dict)
-    equity_curve = {}
-    charts = result.get("charts", {})
-    
-    # Lean 기본 차트 (Strategy Equity) 사용
-    target_chart = charts.get("Strategy Equity", {})
-    series = target_chart.get("series", {})
-    equity_series = series.get("Equity", {})
-    values = equity_series.get("values", [])
-    
-    # 데이터 포인트가 너무 많으면 프론트엔드 렉 방지를 위해 샘플링 (최대 2000개)
-    total_points = len(values)
-    step = max(1, total_points // 2000)
-    
-    for i, point in enumerate(values):
-        # N번째 포인트이거나 마지막 포인트일 때만 포함
-        if i % step != 0 and i != total_points - 1:
-            continue
-            
-        if isinstance(point, list) and len(point) >= 2:
-            try:
-                # fromtimestamp는 시스템 로컬 타임존(KST) 기준으로 변환
-                dt = datetime.fromtimestamp(point[0])
-                val = point[4] if len(point) > 4 else point[1]
-                
-                if resolution == "daily":
-                    # 일봉: 날짜만 표시 (시간 정보 제거)
-                    equity_curve[dt.strftime("%Y-%m-%d")] = float(val)
-                else:
-                    # 분봉: KOSPI 일봉 데이터로 인해 OnData가 호출되며 발생한 00:00:00 포인트 제거
-                    if dt.hour == 0 and dt.minute == 0:
-                        continue
-                    # 분봉: 시분까지 표시
-                    equity_curve[dt.strftime("%Y-%m-%d %H:%M:00")] = float(val)
-            except:
-                pass
+    # 자산 곡선 추출 (리팩토링된 헬퍼 사용)
+    equity_curve = _extract_equity_curve(result, resolution)
 
 
 
@@ -881,6 +912,70 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         raise HTTPException(status_code=500, detail=f"백테스트 실행 오류: {e}")
 
 
+
+class AnalysisRequest(BaseModel):
+    results: List[BulkBacktestResult]
+    benchmark_return: Optional[float] = None
+    start_date: str
+    end_date: str
+    symbols: List[str]
+
+@router.post("/analyze")
+async def analyze_backtest(request: AnalysisRequest):
+    """Gemini AI를 이용한 백테스트 결과 심층 분석"""
+    from kis_backtest.providers.kis.auth import ka
+    env = ka.getEnv()
+    api_key = env.get("gemini_api_key")
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Gemini API 키가 설정되지 않았습니다. kis_devlp.yaml을 확인하세요.")
+
+    # 프롬프트 구성
+    summary_text = ""
+    valid_results = [r for r in request.results if r.success]
+    sorted_results = sorted(valid_results, key=lambda x: x.total_return, reverse=True)
+    
+    for i, r in enumerate(sorted_results):
+        params = ", ".join([f"{k}={v}" for k, v in (r.parameters or {}).items()])
+        summary_text += f"{i+1}. {r.strategy_name}\n"
+        summary_text += f"   - 누적수익률: {r.total_return:+.2f}%\n"
+        summary_text += f"   - Sharpe: {r.sharpe_ratio:.2f}, MDD: {r.max_drawdown:.2f}%\n"
+        summary_text += f"   - 승률: {r.win_rate:.2f}%, 거래수: {r.total_trades}회\n"
+        summary_text += f"   - 파라미터: {params}\n\n"
+
+    prompt = f"""
+당신은 10년 이상의 경험을 가진 전문 퀀트 투자자이자 알고리즘 트레이딩 개발자입니다.
+아래 제공된 주식 자동매매 전략의 백테스트 결과를 심층적으로 분석하고, 수익성과 안정성을 높일 수 있도록 전략 파라미터를 조절해 주세요.
+
+### [백테스트 성과 분석 요청]
+- 기간: {request.start_date} ~ {request.end_date}
+- 종목: {', '.join(request.symbols)}
+- 기준 지수(KOSPI) 수익률: {f'{request.benchmark_return:.2f}%' if request.benchmark_return is not None else 'N/A'}
+
+#### 전략별 성과 순위 (수익률 순)
+{summary_text}
+
+---
+작업 지침:
+1. 위 결과를 분석하여 어떤 전략의 파라미터 조합이 가장 효율적이었는지 평가해줘.
+2. 시장 지수 대비 초과 수익을 낸 핵심 요인이나, 반대로 부진했다면 그 원인을 기술적 지표 특성에 기반해 설명해줘.
+3. 향후 실전 매매를 위해 파라미터를 어떻게 미세 조정(Fine-tuning)하면 좋을지 구체적인 수치와 함께 제안해줘.
+4. 분석 결과는 사용자에게 신뢰감을 줄 수 있도록 마크다운 형식을 사용하여 전문적으로 작성해줘.
+""".strip()
+
+    try:
+        client = genai.Client(api_key=api_key)
+        # 사용자가 요청한 최상위 모델 gemini-3.1-pro-preview 사용
+        response = client.models.generate_content(
+            model="gemini-3.1-pro-preview",
+            contents=prompt
+        )
+        return {"success": True, "analysis": response.text}
+    except Exception as e:
+        logger.error(f"Gemini API 호출 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"AI 분석 중 오류가 발생했습니다: {str(e)}")
+
+
 @router.post(
     "/bulk",
     response_model=BulkBacktestResponse,
@@ -992,7 +1087,8 @@ async def run_bulk_backtest(request: BulkBacktestRequest) -> BulkBacktestRespons
                         total_return=total_return, sharpe_ratio=sharpe,
                         max_drawdown=mdd, win_rate=win_rate,
                         total_trades=total_trades, success=True,
-                        parameters=definition.get_default_params()
+                        parameters=definition.get_default_params(),
+                        equity_curve=_extract_equity_curve(lean_run.load_result(), request.timeframe, max_points=500) # 일괄 테스트는 데이터 경량화를 위해 500포인트 샘플링
                     )
                 else:
                     return BulkBacktestResult(
@@ -1016,20 +1112,47 @@ async def run_bulk_backtest(request: BulkBacktestRequest) -> BulkBacktestRespons
     if not results:
         raise HTTPException(status_code=400, detail="테스트 가능한 유효한 전략이 선택되지 않았습니다.")
 
-    # 5. 벤치마크 수익률 계산
+    # 5. 벤치마크 수익률 계산 및 곡선 추출
     benchmark_val = None
+    benchmark_curve = None
     try:
         curve = _load_benchmark_curve(workspace, start_date, end_date)
         if curve:
             # 마지막 날짜의 수익률이 전체 수익률
-            last_date = sorted(curve.keys())[-1]
+            sorted_keys = sorted(curve.keys())
+            last_date = sorted_keys[-1]
             benchmark_val = curve[last_date]
+            
+            # 개별 백테스트와 동일하게 샘플링 없이 전체 데이터 전달 (정합성 우선)
+            benchmark_curve = curve
+            
+            # [DEBUG] 데이터 상태 출력
+            logger.info(f"[Benchmark_Bulk] {len(curve)} pts loaded. First: {sorted_keys[0]}={curve[sorted_keys[0]]}, Last: {last_date}={benchmark_val}")
     except Exception as e:
         logger.warning(f"[Bulk] 벤치마크 수익률 계산 실패: {e}")
 
+    # 최종 응답 전 benchmark_curve 데이터 객체 여부 확인 로깅
+    status = "PRESENT" if benchmark_curve else f"MISSING ({_last_benchmark_error})"
+    logger.info(f"[Bulk_Response] results={len(results)}, benchmark_curve={status}")
+
+    msg = f"{len(results)}개 전략 테스트 완료"
+    if not benchmark_curve:
+        msg += f" (KOSPI 데이터 로드 실패: {_last_benchmark_error})"
+
+    # [v7] 모든 Pydantic 모델을 원시 딕셔너리로 강제 변환하여 직렬화 오류 방지
+    serialized_results = []
+    for r in results:
+        if isinstance(r, BulkBacktestResult):
+            serialized_results.append(r.model_dump())
+        else:
+            serialized_results.append(r)
+
     return BulkBacktestResponse(
         success=True,
-        results=results,
-        benchmark_return=benchmark_val,
-        message=f"{len(results)}개 전략 테스트 완료"
+        data={
+            "results": serialized_results,
+            "benchmark_return": benchmark_val,
+            "benchmark_curve": benchmark_curve
+        },
+        message=msg
     )

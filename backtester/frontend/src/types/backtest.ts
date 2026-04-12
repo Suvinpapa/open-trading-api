@@ -145,11 +145,11 @@ export interface BulkBacktestResult {
   success: boolean;
   error?: string;
   parameters?: Record<string, any>;
+  equity_curve?: Record<string, number>;
 }
 
 export interface BulkBacktestResponse {
   success: boolean;
-  results: BulkBacktestResult[];
-  benchmark_return?: number;
+  data: Record<string, any>; // 유연한 접근을 위해 Record 타입 사용
   message?: string;
 }
